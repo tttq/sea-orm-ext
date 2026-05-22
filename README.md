@@ -1,22 +1,22 @@
-# sea-orm-ext
+# summer-sea-orm-ext
 
 <div align="center">
 
-![logo](https://img.shields.io/badge/sea--orm--ext-Enterprise%20Extension-blue?style=for-the-badge)
+![logo](https://img.shields.io/badge/summer--sea--orm--ext-Enterprise%20Extension-blue?style=for-the-badge)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
-[![crates.io](https://img.shields.io/badge/crates.io-v0.0.3-orange.svg?style=for-the-badge)](https://crates.io/crates/sea-orm-ext)
-[![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/sea-orm-ext)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.0.1-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
+[![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/summer-sea-orm-ext)
 [![Test Status](https://img.shields.io/badge/tests-109%20passed-green?style=for-the-badge)](#测试覆盖)
 
-> ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离
+> ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，深度集成 Summer 框架
 
 </div>
 
 ---
 
-## ✨ 为什么选择 sea-orm-ext？
+## ✨ 为什么选择 summer-sea-orm-ext？
 
 | 特性 | 说明 | 对比 MyBatis-Plus |
 |------|------|-------------------|
@@ -26,6 +26,7 @@
 | **⚡ Summer 集成** | 声明式配置 + 自动数据库切换，开箱即用 | 无直接对应 |
 | **📝 SQL 日志** | 打印完整 SQL（参数值注入）+ 独立参数列表，调试无忧 | 对应 `log-impl:2.x` |
 | **📄 分页查询** | Web 友好的分页扩展，自动从请求参数解析分页信息 | 对应 `PageHelper` |
+| **🔗 单依赖引入** | Re-export sea-orm/sea-query/summer/summer-web，一个依赖全搞定 | 无直接对应 |
 
 > 🔑 **核心设计理念**：所有功能通过派生宏和 Trait 实现，**非侵入式**，不污染原有 SeaORM API
 
@@ -35,41 +36,93 @@
 
 ```toml
 [dependencies]
-# 默认：启用 runtime-tokio-native-tls（与 summer-sea-orm 一致）
-sea-orm-ext = "0.0.3"
+# 默认：启用 runtime-tokio-native-tls
+summer-sea-orm-ext = "0.0.1"
 
 # 指定数据库驱动
-sea-orm-ext = { version = "0.0.3", features = ["postgres"] }
-sea-orm-ext = { version = "0.0.3", features = ["mysql"] }
-sea-orm-ext = { version = "0.0.3", features = ["sqlite"] }
+summer-sea-orm-ext = { version = "0.0.1", features = ["postgres"] }
+summer-sea-orm-ext = { version = "0.0.1", features = ["mysql"] }
+summer-sea-orm-ext = { version = "0.0.1", features = ["sqlite"] }
+
+# Summer + Web + PostgreSQL + Rustls + Chrono + OpenAPI
+summer-sea-orm-ext = { version = "0.0.1", features = [
+    "summer", "summer-web", "postgres", "rustls",
+    "with-chrono", "with-uuid", "openapi"
+] }
 
 # 启用全部功能
-sea-orm-ext = { version = "0.0.3", features = ["full"] }
+summer-sea-orm-ext = { version = "0.0.1", features = ["full"] }
 ```
+
+> 💡 **无需单独引入** `sea-orm`、`sea-query`、`summer`、`summer-web`，`summer-sea-orm-ext` 已 re-export 所有依赖。
 
 ### Feature Flags
 
-与 `summer-sea-orm` 完全对齐的 features：
+#### 数据库驱动 & TLS
 
-| Feature | 说明 | 依赖 |
-|---------|------|------|
+| Feature | 说明 | 透传到 |
+|---------|------|--------|
 | `default` | `sea-orm/runtime-tokio-native-tls` | sea-orm 内置 |
 | `mysql` | MySQL 驱动 | sea-orm/sqlx-mysql |
 | `postgres` | PostgreSQL 驱动 | sea-orm/sqlx-postgres |
 | `sqlite` | SQLite 驱动 | sea-orm/sqlx-sqlite |
 | `rustls` | 使用 rustls 替代 native-tls | sea-orm/runtime-tokio-rustls |
-| `with-web` | Summer Web 集成（别名） | summer-web, tower |
-| `with-web-openapi` | OpenAPI 分页文档（别名） | summer-web/openapi |
 
-sea-orm-ext 额外提供的 features：
+#### sea-orm 类型支持
 
-| Feature | 说明 | 依赖 |
-|---------|------|------|
-| `summer` | Summer 框架插件集成 | summer |
-| `summer-web` | axum 自动租户切换（TenantLayer + TenantDb） | summer-web, tower |
-| `summer-web-openapi` | OpenAPI 分页参数文档支持 | summer-web/openapi |
-| `runtime-tokio` | Tokio 异步运行时支持 | tokio |
-| `full` | 启用全部功能 | summer, summer-web, runtime-tokio |
+| Feature | 说明 |
+|---------|------|
+| `with-json` | JSON 类型 (serde_json) |
+| `with-chrono` | Chrono 时间类型 |
+| `with-rust_decimal` | Decimal 类型 |
+| `with-uuid` | UUID 类型 |
+| `with-time` | Time 类型 |
+| `with-bigdecimal` | BigDecimal 类型 |
+| `with-ipnetwork` | IP 网络类型 |
+| `with-mac_address` | MAC 地址类型 |
+| `with-arrow` | Arrow 类型 |
+
+#### sea-orm 扩展
+
+| Feature | 说明 |
+|---------|------|
+| `postgres-array` | PostgreSQL 数组 |
+| `postgres-use-serial-pk` | PostgreSQL 串行主键 |
+| `postgres-vector` | pgvector 支持 |
+| `json-array` | JSON 数组 |
+| `sqlite-use-returning-for-3_35` | SQLite RETURNING |
+| `mariadb-use-returning` | MariaDB RETURNING |
+| `debug-print` | 调试打印 |
+| `proxy` | 代理模式 |
+| `rbac` | RBAC 权限控制 |
+| `schema-sync` | Schema 同步 |
+| `seaography` | Seaography GraphQL |
+| `tracing-spans` | Tracing spans |
+| `entity-registry` | 实体注册 |
+
+#### Summer 框架 & Web
+
+| Feature | 说明 | 透传到 |
+|---------|------|--------|
+| `summer` | Summer 框架插件集成 | dep:summer |
+| `summer-web` | axum 自动租户切换 | summer-web, tower |
+| `http2` | HTTP/2 支持 | summer-web?/http2 |
+| `multipart` | 文件上传 | summer-web?/multipart |
+| `openapi` | OpenAPI 文档 | summer-web?/openapi |
+| `openapi-redoc` | ReDoc UI | summer-web?/openapi-redoc |
+| `openapi-scalar` | Scalar UI | summer-web?/openapi-scalar |
+| `openapi-swagger` | Swagger UI | summer-web?/openapi-swagger |
+| `socket-io` | Socket.IO | summer-web?/socket_io |
+| `ws` | WebSocket | summer-web?/ws |
+| `with-web` | summer-web 别名 | summer-web |
+| `with-web-openapi` | openapi 别名 | openapi |
+
+#### Runtime
+
+| Feature | 说明 |
+|---------|------|
+| `runtime-tokio` | Tokio 异步运行时 |
+| `full` | 启用全部功能 (summer + summer-web + runtime-tokio) |
 
 ---
 
@@ -78,7 +131,7 @@ sea-orm-ext 额外提供的 features：
 ### 1. 定义实体（3 行注解 = 全功能）
 
 ```rust
-use sea_orm::entity::prelude::*;
+use summer_sea_orm_ext::sea_orm::entity::prelude::*;
 
 // 一行注解 = 自动填充 + 软删除 + 多租户
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDeleteTenant)]
@@ -91,9 +144,9 @@ pub struct Model {
     pub quantity: i32,
 
     // 🔽 自动填充字段
-    #[sea_orm_ext(insert)]
+    #[summer_sea_orm_ext(insert)]
     pub created_by: Option<String>,
-    #[sea_orm_ext(update)]
+    #[summer_sea_orm_ext(update)]
     pub updated_by: Option<String>,
 
     // 🔽 软删除字段
@@ -101,7 +154,7 @@ pub struct Model {
     pub is_deleted: i32,
 
     // 🔽 租户隔离字段
-    #[sea_orm_ext(TENANT)]
+    #[summer_sea_orm_ext(TENANT)]
     pub tenant_id: Option<String>,
 }
 
@@ -112,7 +165,7 @@ pub enum Relation {}
 ### 2. 设置全局处理器（一次配置，永久生效）
 
 ```rust
-use sea_orm_ext::*;
+use summer_sea_orm_ext::*;
 
 // ID 生成器：Snowflake 算法
 set_id_generator(Box::new(SnowflakeIdGenerator::new(1)));
@@ -145,7 +198,7 @@ enable_sql_log();
 ### 3. CRUD 操作（零改动，自动生效）
 
 ```rust
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use summer_sea_orm_ext::sea_orm::{ActiveModelTrait, EntityTrait, Set};
 
 // ✅ INSERT：自动填充 created_by + tenant_id
 let order = orders::ActiveModel {
@@ -198,7 +251,7 @@ let orders = orders::Entity::find().all(&tenant_db).await?;
 
 ```rust
 // main.rs
-use sea_orm_ext::plugin::*;
+use summer_sea_orm_ext::plugin::*;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -224,7 +277,7 @@ async fn main() -> anyhow::Result<()> {
 
 `SeaOrmPlugin` 整合了数据库连接创建、SQL 日志、字段填充、ID 生成四大功能：
 
-- 从 `[sea-orm]` 配置创建数据库连接
+- 从 `[summer-sea-orm-ext]` 配置创建数据库连接
 - 注册 `DatabaseConnection` 和 `SeaOrmExtConnection` 组件
 - `enable_sql_log = true` 开启完整 SQL 日志（含参数值注入 + 参数列表）
 - 自动注册字段填充处理器和 ID 生成器
@@ -248,8 +301,8 @@ async fn list_orders(TenantDb(db): TenantDb) -> Result<Json<Vec<Order>>, StatusC
 ### 配置示例
 
 ```toml
-# sea-orm 配置（数据库连接 + SQL 日志 + 字段填充）
-[sea-orm]
+# 数据库配置（连接 + SQL 日志 + 字段填充）
+[summer-sea-orm-ext]
 uri = "postgres://user:pass@localhost:5432/mydb"
 enable_sql_log = true
 min_connections = 1
@@ -260,21 +313,21 @@ acquire_timeout = 30000
 default_user = "system"
 
 # 多租户配置
-[sea-orm-ext-tenant]
+[summer-sea-orm-ext-tenant]
 enabled = true
 mode = "database"
 database_source = "config"
 default_tenant_id = "1"
 
-[[sea-orm-ext-tenant.databases]]
+[[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000001"
-[sea-orm-ext-tenant.databases.database]
+[summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_1"
 max_connections = 20
 
-[[sea-orm-ext-tenant.databases]]
+[[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000002"
-[sea-orm-ext-tenant.databases.database]
+[summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_2"
 max_connections = 20
 ```
@@ -282,10 +335,10 @@ max_connections = 20
 ### TenantIdProvider 实现
 
 ```rust
-use sea_orm_ext::{TenantIdProvider, TenantDatabaseProvider};
-use sea_query::Value;
+use summer_sea_orm_ext::{TenantIdProvider, TenantDatabaseProvider};
+use summer_sea_orm_ext::sea_orm::ConnectOptions;
+use summer_sea_orm_ext::sea_query::Value;
 use std::collections::HashMap;
-use sea_orm::ConnectOptions;
 
 // 🔷 从请求上下文获取租户 ID（如 JWT、Header）
 struct HttpTenantIdProvider;
@@ -309,6 +362,27 @@ impl TenantDatabaseProvider for ConfigTenantDatabaseProvider {
 
 ---
 
+## 🔗 Re-export 机制
+
+`summer-sea-orm-ext` 重新导出了所有依赖 crate，使用时只需引入一个依赖：
+
+| Re-export | 条件 | 说明 |
+|-----------|------|------|
+| `sea_orm` | 始终可用 | SeaORM 核心 |
+| `sea_query` | 始终可用 | SeaQuery 核心 |
+| `summer` | `summer` feature | Summer 框架 |
+| `summer_web` | `summer-web` feature | Summer Web 框架 |
+| `tower` | `summer-web` feature | Tower 中间件 |
+
+```rust
+// 无需单独引入 sea-orm、summer-web 等
+use summer_sea_orm_ext::sea_orm::EntityTrait;
+use summer_sea_orm_ext::summer_web::SomeType;
+use summer_sea_orm_ext::{DbConn, SeaOrmExtConnection, SoftDelete};
+```
+
+---
+
 ## 📝 SQL 日志
 
 ### SeaOrmExtConnection
@@ -323,12 +397,12 @@ impl TenantDatabaseProvider for ConfigTenantDatabaseProvider {
 **日志输出示例**：
 
 ```
-[sea-orm-ext SQL] SELECT "order"."id", "order"."product_name", "order"."quantity" FROM "order" WHERE "order"."is_deleted" = 0 AND "order"."tenant_id" = '1'
-[sea-orm-ext Params] [Int(Some(0)), String(Some("1"))]
+[summer-sea-orm-ext SQL] SELECT "order"."id", "order"."product_name", "order"."quantity" FROM "order" WHERE "order"."is_deleted" = 0 AND "order"."tenant_id" = '1'
+[summer-sea-orm-ext Params] [Int(Some(0)), String(Some("1"))]
 ```
 
 ```rust
-use sea_orm_ext::{DbConn, enable_sql_log, disable_sql_log};
+use summer_sea_orm_ext::{DbConn, enable_sql_log, disable_sql_log};
 
 // DbConn = SeaOrmExtConnection
 #[inject(component)]
@@ -357,7 +431,7 @@ let ext_conn: SeaOrmExtConnection = store.get_ext(&tenant_id).unwrap();
 ## 📄 分页查询
 
 ```rust
-use sea_orm_ext::{Pagination, PaginationExt, Page};
+use summer_sea_orm_ext::{Pagination, PaginationExt, Page};
 
 // 基础分页
 let pagination = Pagination { page: 0, size: 20, one_indexed: false };
@@ -374,7 +448,7 @@ async fn list_orders(pagination: Pagination, TenantDb(db): TenantDb) -> Result<J
 ### SeaOrmWebConfig
 
 ```toml
-[sea-orm-web]
+[summer-sea-orm-ext-web]
 one_indexed = false
 default_page_size = 20
 max_page_size = 2000
@@ -412,13 +486,13 @@ max_page_size = 2000
 
 ```rust
 // 1. 默认自增 ID
-sea_orm_ext::set_id_generator(Box::new(DefaultIdGenerator::default()));
+summer_sea_orm_ext::set_id_generator(Box::new(DefaultIdGenerator::default()));
 
 // 2. UUID
-sea_orm_ext::set_id_generator(Box::new(UuidIdGenerator::new()));
+summer_sea_orm_ext::set_id_generator(Box::new(UuidIdGenerator::new()));
 
 // 3. Snowflake 分布式 ID
-sea_orm_ext::set_id_generator(Box::new(SnowflakeIdGenerator::new(1)));
+summer_sea_orm_ext::set_id_generator(Box::new(SnowflakeIdGenerator::new(1)));
 
 // 4. 自定义
 struct MyGenerator;
@@ -428,7 +502,7 @@ impl IdGenerator for MyGenerator {
         // 智能类型适配
     }
 }
-sea_orm_ext::set_id_generator(Box::new(MyGenerator));
+summer_sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 ```
 
 ---
@@ -454,7 +528,7 @@ cargo test --workspace --features full
 ## 📚 文档
 
 - [中文文档 (WIP)](https://summer-rs.github.io)
-- [API 文档](https://docs.rs/sea-orm-ext)
+- [API 文档](https://docs.rs/summer-sea-orm-ext)
 - [Summer 框架](https://summer-rs.github.io/zh/)
 
 ---

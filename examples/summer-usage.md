@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-sea-orm-ext = { version = "0.2", features = ["full"] }
+summer-sea-orm-ext = { version = "0.0.1", features = ["full"] }
 summer = "0.6.0"
 summer-web = "0.6.0"
 ```
@@ -24,7 +24,7 @@ Feature 说明：
 用户实现此 trait，提供租户 ID 的获取逻辑：
 
 ```rust
-use sea_orm_ext::TenantIdProvider;
+use summer_sea_orm_ext::TenantIdProvider;
 use sea_query::Value;
 
 struct MyTenantIdProvider;
@@ -42,7 +42,7 @@ impl TenantIdProvider for MyTenantIdProvider {
 Database 模式下，用户实现此 trait 返回租户数据库配置：
 
 ```rust
-use sea_orm_ext::TenantDatabaseProvider;
+use summer_sea_orm_ext::TenantDatabaseProvider;
 use sea_orm::ConnectOptions;
 use sea_query::Value;
 use std::collections::HashMap;
@@ -64,7 +64,7 @@ impl TenantDatabaseProvider for MyTenantDatabaseProvider {
 用户实现此 trait 提供自定义填充逻辑：
 
 ```rust
-use sea_orm_ext::{FieldFillHandler, FieldFillOperation};
+use summer_sea_orm_ext::{FieldFillHandler, FieldFillOperation};
 use sea_query::Value;
 
 struct MyFieldFillHandler;
@@ -83,10 +83,10 @@ impl FieldFillHandler for MyFieldFillHandler {
 ### 3. 在 Summer 应用中使用
 
 ```rust
-use sea_orm_ext::plugin::sea_orm_ext::{FieldFillHandlerComponent, SeaOrmExtPlugin, SnowflakeIdGenerator};
-use sea_orm_ext::plugin::tenant::{TenantDatabaseProviderComponent, TenantIdProviderComponent, TenantPlugin};
-use sea_orm_ext::{FieldFillHandler, FieldFillOperation, TenantDatabaseProvider, TenantIdProvider};
-use sea_orm_ext::set_id_generator;
+use summer_sea_orm_ext::plugin::sea_orm_ext::{FieldFillHandlerComponent, SeaOrmExtPlugin, SnowflakeIdGenerator};
+use summer_sea_orm_ext::plugin::tenant::{TenantDatabaseProviderComponent, TenantIdProviderComponent, TenantPlugin};
+use summer_sea_orm_ext::{FieldFillHandler, FieldFillOperation, TenantDatabaseProvider, TenantIdProvider};
+use summer_sea_orm_ext::set_id_generator;
 use sea_orm::ConnectOptions;
 use sea_query::Value;
 use std::collections::HashMap;
@@ -120,7 +120,7 @@ async fn main() {
 Handler 中使用 `TenantDb` extractor 自动获取正确的数据库连接：
 
 ```rust
-use sea_orm_ext::plugin::tenant_layer::TenantDb;
+use summer_sea_orm_ext::plugin::tenant_layer::TenantDb;
 
 async fn list_products(TenantDb(db): TenantDb) -> Result<Json<Vec<Product>>, StatusCode> {
     // db 已经是当前租户对应的数据库连接，无需手动切换
@@ -135,23 +135,23 @@ async fn list_products(TenantDb(db): TenantDb) -> Result<Json<Vec<Product>>, Sta
 ### TOML 配置
 
 ```toml
-[sea-orm-ext-tenant]
+[summer-sea-orm-ext-tenant]
 enabled = true
 mode = "database"              # "table" 或 "database"
 database_source = "config"     # "config" 或 "custom"
 default_tenant_id = "1"
 
 # database_source = "config" 时配置
-[[sea-orm-ext-tenant.databases]]
+[[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1"
-[sea-orm-ext-tenant.databases.database]
+[summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_1_db"
 max_connections = 20
 min_connections = 5
 connect_timeout_secs = 30
 acquire_timeout_secs = 30
 
-[sea-orm-ext]
+[summer-sea-orm-ext]
 default_user = "system"
 enable_sql_log = false
 ```
@@ -176,7 +176,7 @@ enable_sql_log = false
 所有租户共享同一数据库，通过 `tenant_id` 字段区分。宏自动注入租户 ID 和过滤条件。
 
 ```toml
-[sea-orm-ext-tenant]
+[summer-sea-orm-ext-tenant]
 enabled = true
 mode = "table"
 ```
@@ -186,7 +186,7 @@ mode = "table"
 每个租户拥有独立数据库。通过 `TenantIdProvider` 获取当前租户 ID，自动切换连接。
 
 ```toml
-[sea-orm-ext-tenant]
+[summer-sea-orm-ext-tenant]
 enabled = true
 mode = "database"
 database_source = "custom"
@@ -196,6 +196,6 @@ database_source = "custom"
 
 | 插件 | 配置前缀 | 功能 |
 |---|---|---|
-| `TenantPlugin` | `sea-orm-ext-tenant` | 多租户配置 + 租户 ID/数据库提供器注册 + 自动 axum layer |
-| `SeaOrmExtPlugin` | `sea-orm-ext` | 字段自动填充 + ID 生成 + SQL 日志 |
+| `TenantPlugin` | `summer-sea-orm-ext-tenant` | 多租户配置 + 租户 ID/数据库提供器注册 + 自动 axum layer |
+| `SeaOrmExtPlugin` | `summer-sea-orm-ext` | 字段自动填充 + ID 生成 + SQL 日志 |
 | `SoftDeletePlugin` | — | 不需要，使用宏即自动开启 |

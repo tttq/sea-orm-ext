@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::sea_orm_ext_connection::SeaOrmExtConnection;
+use crate::summer_sea_orm_ext_connection::SeaOrmExtConnection;
 
 #[cfg(feature = "runtime-tokio")]
 use std::future::Future;

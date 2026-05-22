@@ -15,14 +15,14 @@
 //! **方式一：Summer Plugin 配置（推荐）**
 //!
 //! ```toml
-//! [sea-orm-ext]
+//! [summer-sea-orm-ext]
 //! enable_sql_log = true
 //! ```
 //!
 //! **方式二：运行时 API**
 //!
 //! ```ignore
-//! use sea_orm_ext::{enable_sql_log, disable_sql_log};
+//! use summer_sea_orm_ext::{enable_sql_log, disable_sql_log};
 //!
 //! enable_sql_log();   // 开启
 //! disable_sql_log();  // 关闭
@@ -31,7 +31,7 @@
 //! # 使用方式
 //!
 //! ```ignore
-//! use sea_orm_ext::{SeaOrmExtConnection, enable_sql_log};
+//! use summer_sea_orm_ext::{SeaOrmExtConnection, enable_sql_log};
 //!
 //! let db = Database::connect("...").await?;
 //! let db = SeaOrmExtConnection::new(db);
@@ -40,7 +40,7 @@
 //!
 //! // 所有 SQL 操作都会打印完整语句
 //! let users = User::find().all(&db).await?;
-//! // 输出: [sea-orm-ext SQL] SELECT "user"."id", "user"."name" FROM "user" WHERE "user"."is_deleted" = 0
+//! // 输出: [summer-sea-orm-ext SQL] SELECT "user"."id", "user"."name" FROM "user" WHERE "user"."is_deleted" = 0
 //! ```
 
 use std::sync::atomic::{AtomicBool, Ordering};

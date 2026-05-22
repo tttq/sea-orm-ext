@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-pub use sea_orm_ext::{
+pub use summer_sea_orm_ext::{
     IdGenerator, FieldFillHandler, FieldFillOperation,
     enable_sql_log, disable_sql_log, set_sql_log_enabled, is_sql_log_enabled,
     set_id_generator, set_field_fill_handler, clear_field_fill_handler, clear_id_generator,
@@ -56,7 +56,7 @@ pub fn reset_global_state() {
 
 mod product_entity {
     use sea_orm::entity::prelude::*;
-    use sea_orm_ext::DeriveAutoFillSoftDeleteTenant;
+    use summer_sea_orm_ext::DeriveAutoFillSoftDeleteTenant;
 
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDeleteTenant)]
     #[sea_orm(table_name = "products")]
@@ -65,15 +65,15 @@ mod product_entity {
         pub id: i64,
         pub name: String,
         pub price: Option<f64>,
-        #[sea_orm_ext(insert)]
+        #[summer_sea_orm_ext(insert)]
         pub created_by: Option<String>,
-        #[sea_orm_ext(update)]
+        #[summer_sea_orm_ext(update)]
         pub updated_by: Option<String>,
-        #[sea_orm_ext(insert_update)]
+        #[summer_sea_orm_ext(insert_update)]
         pub version: i32,
         #[soft_delete(default = 0, del = 1)]
         pub is_deleted: i32,
-        #[sea_orm_ext(TENANT)]
+        #[summer_sea_orm_ext(TENANT)]
         pub tenant_id: Option<String>,
     }
 
@@ -85,7 +85,7 @@ pub use product_entity::{Entity as Product, Model as ProductModel, ActiveModel a
 
 mod config_entity {
     use sea_orm::entity::prelude::*;
-    use sea_orm_ext::DeriveAutoFillSoftDelete;
+    use summer_sea_orm_ext::DeriveAutoFillSoftDelete;
 
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDelete)]
     #[sea_orm(table_name = "sys_config")]
@@ -94,9 +94,9 @@ mod config_entity {
         pub id: i64,
         pub key: String,
         pub value: String,
-        #[sea_orm_ext(insert)]
+        #[summer_sea_orm_ext(insert)]
         pub created_by: Option<String>,
-        #[sea_orm_ext(update)]
+        #[summer_sea_orm_ext(update)]
         pub updated_by: Option<String>,
         #[soft_delete(default = 0, del = 1)]
         pub is_deleted: i32,
@@ -110,7 +110,7 @@ pub use config_entity::{Entity as SysConfig, ActiveModel as SysConfigActiveModel
 
 mod document_entity {
     use sea_orm::entity::prelude::*;
-    use sea_orm_ext::DeriveAutoFillSoftDelete;
+    use summer_sea_orm_ext::DeriveAutoFillSoftDelete;
 
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDelete)]
     #[sea_orm(table_name = "documents")]
@@ -119,9 +119,9 @@ mod document_entity {
         pub id: String,
         pub title: String,
         pub content: Option<String>,
-        #[sea_orm_ext(insert)]
+        #[summer_sea_orm_ext(insert)]
         pub created_by: Option<String>,
-        #[sea_orm_ext(update)]
+        #[summer_sea_orm_ext(update)]
         pub updated_by: Option<String>,
         #[soft_delete(default = 0, del = 1)]
         pub is_deleted: i32,
@@ -135,7 +135,7 @@ pub use document_entity::{Entity as Document, ActiveModel as DocumentActiveModel
 
 mod order_entity {
     use sea_orm::entity::prelude::*;
-    use sea_orm_ext::DeriveAutoFillTenant;
+    use summer_sea_orm_ext::DeriveAutoFillTenant;
 
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillTenant)]
     #[sea_orm(table_name = "orders")]
@@ -144,11 +144,11 @@ mod order_entity {
         pub id: i64,
         pub product_name: String,
         pub quantity: i32,
-        #[sea_orm_ext(insert)]
+        #[summer_sea_orm_ext(insert)]
         pub created_by: Option<String>,
-        #[sea_orm_ext(update)]
+        #[summer_sea_orm_ext(update)]
         pub updated_by: Option<String>,
-        #[sea_orm_ext(TENANT)]
+        #[summer_sea_orm_ext(TENANT)]
         pub tenant_id: Option<String>,
     }
 

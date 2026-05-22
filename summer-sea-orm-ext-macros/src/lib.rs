@@ -1,4 +1,4 @@
-//! # sea-orm-ext-macros
+//! # summer-sea-orm-ext-macros
 //!
 //! 过程宏(proc-macro)实现，为 sea-orm-ext 提供派生宏支持。
 //!
@@ -209,7 +209,7 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
                     &input.ident,
                     "DeriveSoftDelete requires a field annotated with #[soft_delete(...)]",
                 )
-                .to_compile_error();
+                    .to_compile_error();
             }
             Err(e) => return e.to_compile_error(),
         }
@@ -226,7 +226,7 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
                     &input.ident,
                     "DeriveTenant requires a field annotated with #[sea_orm_ext(TENANT)]",
                 )
-                .to_compile_error();
+                    .to_compile_error();
             }
             Err(e) => return e.to_compile_error()
         }
@@ -271,9 +271,9 @@ fn parse_fill_fields(data: &Data) -> syn::Result<Vec<FillFieldInfo>> {
     // 只处理具名字段的结构体
     let fields = match data {
         Data::Struct(DataStruct {
-            fields: Fields::Named(named),
-            ..
-        }) => &named.named,
+                         fields: Fields::Named(named),
+                         ..
+                     }) => &named.named,
         _ => return Ok(Vec::new()),
     };
 
@@ -351,9 +351,9 @@ fn parse_fill_fields(data: &Data) -> syn::Result<Vec<FillFieldInfo>> {
 fn parse_primary_key(data: &Data) -> syn::Result<Option<PrimaryKeyInfo>> {
     let fields = match data {
         Data::Struct(DataStruct {
-            fields: Fields::Named(named),
-            ..
-        }) => &named.named,
+                         fields: Fields::Named(named),
+                         ..
+                     }) => &named.named,
         _ => return Ok(None),
     };
 
@@ -416,9 +416,9 @@ fn parse_primary_key(data: &Data) -> syn::Result<Option<PrimaryKeyInfo>> {
 fn parse_soft_delete_field(data: &Data) -> syn::Result<Option<SoftDeleteFieldInfo>> {
     let fields = match data {
         Data::Struct(DataStruct {
-            fields: Fields::Named(named),
-            ..
-        }) => &named.named,
+                         fields: Fields::Named(named),
+                         ..
+                     }) => &named.named,
         _ => return Ok(None),
     };
 
@@ -484,9 +484,9 @@ fn parse_soft_delete_field(data: &Data) -> syn::Result<Option<SoftDeleteFieldInf
 fn parse_tenant_field(data: &Data) -> syn::Result<Option<TenantFieldInfo>> {
     let fields = match data {
         Data::Struct(DataStruct {
-            fields: Fields::Named(named),
-            ..
-        }) => &named.named,
+                         fields: Fields::Named(named),
+                         ..
+                     }) => &named.named,
         _ => return Ok(None),
     };
 
@@ -547,11 +547,11 @@ fn is_compound_field(field_type_str: &str) -> bool {
         || field_type_str.starts_with("HasOneModel<")
         || field_type_str.starts_with("HasManyModel<")
         || (field_type_str.starts_with("Option<")
-            && (field_type_str.ends_with("::Entity>")
-                || field_type_str.ends_with("::Relation>")))
+        && (field_type_str.ends_with("::Entity>")
+        || field_type_str.ends_with("::Relation>")))
         || (field_type_str.starts_with("Vec<")
-            && (field_type_str.ends_with("::Entity>")
-                || field_type_str.ends_with("::Relation>")))
+        && (field_type_str.ends_with("::Entity>")
+        || field_type_str.ends_with("::Relation>")))
 }
 
 /// 提取 `Option<T>` 的内部类型 `T`，并返回是否为 Option 类型
@@ -711,14 +711,14 @@ fn expand_before_save_body(
             };
 
             match field.fill_mode {
-            FillMode::Insert => insert_branches.push(fill_code),
-            FillMode::Update => update_branches.push(fill_code),
-            FillMode::InsertUpdate => {
-                // InsertUpdate 模式在两种场景都需要填充
-                insert_branches.push(fill_code.clone());
-                update_branches.push(fill_code);
+                FillMode::Insert => insert_branches.push(fill_code),
+                FillMode::Update => update_branches.push(fill_code),
+                FillMode::InsertUpdate => {
+                    // InsertUpdate 模式在两种场景都需要填充
+                    insert_branches.push(fill_code.clone());
+                    update_branches.push(fill_code);
+                }
             }
-        }
         }
 
         // 将收集到的填充代码放入 insert/!insert 分支中

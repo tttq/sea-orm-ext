@@ -171,7 +171,7 @@ impl TenantDatabaseProviderComponent {
     }
 }
 #[derive(Clone, Serialize, Deserialize,JsonSchema, Configurable)]
-#[config_prefix = "sea-orm-ext-tenant"]
+#[config_prefix = "summer-sea-orm-ext-tenant"]
 pub struct TenantPluginConfig {
     pub enabled: bool,
     pub mode: String,
@@ -453,7 +453,7 @@ impl Plugin for TenantPlugin {
     }
 
     fn name(&self) -> &'static str {
-        "sea-orm-ext-tenant"
+        "summer-sea-orm-ext-tenant"
     }
 }
 

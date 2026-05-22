@@ -128,7 +128,7 @@ pub fn get_id_generator() -> Option<Arc<dyn IdGenerator>> {
 /// # 用法
 ///
 /// ```ignore
-/// use sea_orm_ext::{set_id_generator, UuidIdGenerator};
+/// use summer_sea_orm_ext::{set_id_generator, UuidIdGenerator};
 ///
 /// set_id_generator(Box::new(UuidIdGenerator::new()));
 /// ```
@@ -173,7 +173,7 @@ impl IdGenerator for UuidIdGenerator {
 /// # 用法
 ///
 /// ```ignore
-/// use sea_orm_ext::{set_id_generator, TypedIdGenerator};
+/// use summer_sea_orm_ext::{set_id_generator, TypedIdGenerator};
 ///
 /// // 使用默认配置：整数用原子计数器，字符串用 UUID
 /// set_id_generator(Box::new(TypedIdGenerator::new()));

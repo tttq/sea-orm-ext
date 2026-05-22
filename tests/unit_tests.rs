@@ -112,7 +112,7 @@ fn test_tenant_database_config_get_all_tenant_ids() {
 #[cfg(feature = "summer")]
 #[test]
 fn test_tenant_plugin_config_from_toml_with_integer_tenant_id() {
-    use sea_orm_ext::plugin::tenant::TenantPluginConfig;
+    use summer_sea_orm_ext::plugin::tenant::TenantPluginConfig;
 
     let toml_str = r#"
         enabled = true
@@ -159,62 +159,62 @@ fn test_tenant_database_config_file_invalid_toml() {
 // ===========================================================================
 
 #[test]
-fn test_sea_orm_ext_error_tenant_not_found() {
+fn test_summer_sea_orm_ext_error_tenant_not_found() {
     let err = SeaOrmExtError::TenantNotFound("t1".to_string());
     assert!(err.to_string().contains("Tenant not found"));
     assert!(err.to_string().contains("t1"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_tenant_id_required() {
+fn test_summer_sea_orm_ext_error_tenant_id_required() {
     let err = SeaOrmExtError::TenantIdRequired;
     assert!(err.to_string().contains("required"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_connection_store_not_initialized() {
+fn test_summer_sea_orm_ext_error_connection_store_not_initialized() {
     let err = SeaOrmExtError::ConnectionStoreNotInitialized;
     assert!(err.to_string().contains("Connection store"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_tenant_store_not_initialized() {
+fn test_summer_sea_orm_ext_error_tenant_store_not_initialized() {
     let err = SeaOrmExtError::TenantStoreNotInitialized;
     assert!(err.to_string().contains("Tenant store"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_tenant_config_not_set() {
+fn test_summer_sea_orm_ext_error_tenant_config_not_set() {
     let err = SeaOrmExtError::TenantConfigNotSet;
     assert!(err.to_string().contains("config"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_invalid_tenant_mode() {
+fn test_summer_sea_orm_ext_error_invalid_tenant_mode() {
     let err = SeaOrmExtError::InvalidTenantMode("sharding".to_string());
     assert!(err.to_string().contains("sharding"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_field_fill_handler_not_found() {
+fn test_summer_sea_orm_ext_error_field_fill_handler_not_found() {
     let err = SeaOrmExtError::FieldFillHandlerNotFound;
     assert!(err.to_string().contains("Field fill handler"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_id_generator_not_initialized() {
+fn test_summer_sea_orm_ext_error_id_generator_not_initialized() {
     let err = SeaOrmExtError::IdGeneratorNotInitialized;
     assert!(err.to_string().contains("ID generator"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_config() {
+fn test_summer_sea_orm_ext_error_config() {
     let err = SeaOrmExtError::Config("bad config".to_string());
     assert!(err.to_string().contains("bad config"));
 }
 
 #[test]
-fn test_sea_orm_ext_error_database_from_db_err() {
+fn test_summer_sea_orm_ext_error_database_from_db_err() {
     let db_err = sea_orm::DbErr::Custom("test error".to_string());
     let ext_err: SeaOrmExtError = db_err.into();
     assert!(matches!(ext_err, SeaOrmExtError::Database(_)));
@@ -636,12 +636,12 @@ async fn test_hashmap_connection_store_bigint_tenant_id() {
 }
 
 // ===========================================================================
-// sea_orm_ext_connection 模块测试
+// summer_sea_orm_ext_connection 模块测试
 // ===========================================================================
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_new() {
+async fn test_summer_sea_orm_ext_connection_new() {
     reset_global_state();
 
     let db = create_sqlite_db().await;
@@ -652,7 +652,7 @@ async fn test_sea_orm_ext_connection_new() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_inner() {
+async fn test_summer_sea_orm_ext_connection_inner() {
     reset_global_state();
 
     let db = create_sqlite_db().await;
@@ -663,7 +663,7 @@ async fn test_sea_orm_ext_connection_inner() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_into_inner() {
+async fn test_summer_sea_orm_ext_connection_into_inner() {
     reset_global_state();
 
     let db = create_sqlite_db().await;
@@ -674,7 +674,7 @@ async fn test_sea_orm_ext_connection_into_inner() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_deref() {
+async fn test_summer_sea_orm_ext_connection_deref() {
     reset_global_state();
 
     let db = create_sqlite_db().await;
@@ -686,7 +686,7 @@ async fn test_sea_orm_ext_connection_deref() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_insert_and_query() {
+async fn test_summer_sea_orm_ext_connection_insert_and_query() {
     reset_global_state();
 
     set_id_generator(Box::new(TestIdGenerator::new()));
@@ -708,7 +708,7 @@ async fn test_sea_orm_ext_connection_insert_and_query() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_update() {
+async fn test_summer_sea_orm_ext_connection_update() {
     reset_global_state();
 
     set_id_generator(Box::new(TestIdGenerator::new()));
@@ -731,7 +731,7 @@ async fn test_sea_orm_ext_connection_update() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_soft_delete() {
+async fn test_summer_sea_orm_ext_connection_soft_delete() {
     reset_global_state();
 
     set_id_generator(Box::new(TestIdGenerator::new()));
@@ -754,7 +754,7 @@ async fn test_sea_orm_ext_connection_soft_delete() {
 
 #[tokio::test]
 #[serial]
-async fn test_sea_orm_ext_connection_batch_operations() {
+async fn test_summer_sea_orm_ext_connection_batch_operations() {
     reset_global_state();
 
     set_id_generator(Box::new(TestIdGenerator::new()));

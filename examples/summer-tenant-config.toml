@@ -1,36 +1,36 @@
-[sea-orm-ext-tenant]
+[summer-sea-orm-ext-tenant]
 enabled = true
 mode = "database"
 database_source = "config"
 default_tenant_id = "1876543210000000001"
 
-[[sea-orm-ext-tenant.databases]]
+[[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000001"
-[sea-orm-ext-tenant.databases.database]
+[summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_1_db"
 max_connections = 20
 min_connections = 5
 connect_timeout_secs = 30
 acquire_timeout_secs = 30
 
-[[sea-orm-ext-tenant.databases]]
+[[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000002"
-[sea-orm-ext-tenant.databases.database]
+[summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_2_db"
 max_connections = 20
 min_connections = 5
 connect_timeout_secs = 30
 acquire_timeout_secs = 30
 
-[[sea-orm-ext-tenant.databases]]
+[[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000003"
-[sea-orm-ext-tenant.databases.database]
+[summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_3_db"
 max_connections = 15
 min_connections = 3
 connect_timeout_secs = 60
 acquire_timeout_secs = 60
 
-[sea-orm-ext]
+[summer-sea-orm-ext]
 default_user = "system"
 enable_sql_log = false
