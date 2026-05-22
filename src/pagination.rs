@@ -1,0 +1,344 @@
+use schemars::JsonSchema;
+use sea_orm::{
+    ConnectionTrait, EntityTrait, FromQueryResult, PaginatorTrait, Select, Selector, SelectorTrait,
+};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Pagination {
+    #[serde(default = "default_page")]
+    pub page: u64,
+    #[serde(default = "default_size")]
+    pub size: u64,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub one_indexed: bool,
+}
+
+fn default_page() -> u64 {
+    0
+}
+fn default_size() -> u64 {
+    20
+}
+
+impl Pagination {
+    pub fn empty_page<T>(&self) -> Page<T> {
+        Page::new(vec![], self, 0)
+    }
+
+    fn response_page(&self) -> u64 {
+        if self.one_indexed {
+            self.page + 1
+        } else {
+            self.page
+        }
+    }
+}
+
+#[cfg(feature = "summer-web")]
+mod web {
+    use super::Pagination;
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use summer::config::Configurable;
+    use summer_web::axum::extract::rejection::QueryRejection;
+    use summer_web::axum::extract::{FromRequestParts, Query};
+    use summer_web::axum::http::request::Parts;
+    use summer_web::axum::response::IntoResponse;
+    use summer_web::extractor::RequestPartsExt;
+    use std::result::Result as StdResult;
+    use thiserror::Error;
+
+    summer::submit_config_schema!("sea-orm-web", SeaOrmWebConfig);
+
+    #[derive(Debug, Configurable, Clone, JsonSchema, Deserialize)]
+    #[config_prefix = "sea-orm-web"]
+    pub struct SeaOrmWebConfig {
+        #[serde(default = "default_one_indexed")]
+        pub one_indexed: bool,
+        #[serde(default = "default_max_page_size")]
+        pub max_page_size: u64,
+        #[serde(default = "default_page_size")]
+        pub default_page_size: u64,
+    }
+
+    fn default_one_indexed() -> bool {
+        false
+    }
+    fn default_max_page_size() -> u64 {
+        2000
+    }
+    fn default_page_size() -> u64 {
+        20
+    }
+
+    #[derive(Debug, Error)]
+    pub enum SeaOrmWebErr {
+        #[error(transparent)]
+        QueryRejection(#[from] QueryRejection),
+
+        #[error(transparent)]
+        WebError(#[from] summer_web::error::WebError),
+    }
+
+    impl IntoResponse for SeaOrmWebErr {
+        fn into_response(self) -> summer_web::axum::response::Response {
+            match self {
+                Self::QueryRejection(e) => e.into_response(),
+                Self::WebError(e) => e.into_response(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Deserialize, JsonSchema)]
+    struct OptionalPagination {
+        page: Option<u64>,
+        size: Option<u64>,
+    }
+
+    impl<S> FromRequestParts<S> for Pagination
+    where
+        S: Sync,
+    {
+        type Rejection = SeaOrmWebErr;
+
+        async fn from_request_parts(
+            parts: &mut Parts,
+            _state: &S,
+        ) -> StdResult<Self, Self::Rejection> {
+            let Query(pagination) = Query::<OptionalPagination>::try_from_uri(&parts.uri)?;
+
+            let config = parts.get_config::<SeaOrmWebConfig>()?;
+
+            let size = match pagination.size {
+                Some(size) => {
+                    if size > config.max_page_size {
+                        config.max_page_size
+                    } else {
+                        size
+                    }
+                }
+                None => config.default_page_size,
+            };
+
+            let page = if config.one_indexed {
+                pagination
+                    .page
+                    .map(|page| if page == 0 { 0 } else { page - 1 })
+                    .unwrap_or(0)
+            } else {
+                pagination.page.unwrap_or(0)
+            };
+
+            Ok(Pagination {
+                page,
+                size,
+                one_indexed: config.one_indexed,
+            })
+        }
+    }
+
+    #[cfg(feature = "summer-web-openapi")]
+    impl summer_web::aide::OperationInput for Pagination {
+        fn operation_input(
+            ctx: &mut summer_web::aide::generate::GenContext,
+            operation: &mut summer_web::aide::openapi::Operation,
+        ) {
+            <Query<OptionalPagination> as summer_web::aide::OperationInput>::operation_input(
+                ctx, operation,
+            );
+        }
+
+        fn inferred_early_responses(
+            ctx: &mut summer_web::aide::generate::GenContext,
+            operation: &mut summer_web::aide::openapi::Operation,
+        ) -> Vec<(
+            Option<summer_web::aide::openapi::StatusCode>,
+            summer_web::aide::openapi::Response,
+        )> {
+            <Query<OptionalPagination> as summer_web::aide::OperationInput>::inferred_early_responses(ctx, operation)
+        }
+    }
+}
+
+#[cfg(feature = "summer-web")]
+pub use web::SeaOrmWebConfig;
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Page<T> {
+    pub content: Vec<T>,
+    pub size: u64,
+    pub page: u64,
+    pub total_elements: u64,
+    pub total_pages: u64,
+    #[serde(skip)]
+    #[schemars(skip)]
+    one_indexed: bool,
+}
+
+impl<T> Page<T> {
+    pub fn new(content: Vec<T>, pagination: &Pagination, total: u64) -> Self {
+        Self {
+            content,
+            size: pagination.size,
+            page: pagination.response_page(),
+            total_elements: total,
+            total_pages: Self::total_pages(total, pagination.size),
+            one_indexed: pagination.one_indexed,
+        }
+    }
+
+    fn total_pages(total: u64, size: u64) -> u64 {
+        if size == 0 {
+            return 0;
+        }
+        (total / size) + u64::from(!total.is_multiple_of(size))
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.content.iter()
+    }
+
+    pub fn map<F, R>(self, func: F) -> Page<R>
+    where
+        F: FnMut(T) -> R,
+    {
+        let Page {
+            content,
+            size,
+            page,
+            total_elements,
+            total_pages,
+            one_indexed,
+        } = self;
+        let content = content.into_iter().map(func).collect();
+        Page {
+            content,
+            size,
+            page,
+            total_elements,
+            total_pages,
+            one_indexed,
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    #[inline]
+    pub fn is_first(&self) -> bool {
+        if self.one_indexed {
+            self.page <= 1
+        } else {
+            self.page == 0
+        }
+    }
+
+    #[inline]
+    pub fn is_last(&self) -> bool {
+        if self.one_indexed {
+            self.page >= self.total_pages
+        } else {
+            self.page + 1 >= self.total_pages
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum OrmError {
+    #[error(transparent)]
+    DbErr(#[from] sea_orm::DbErr),
+}
+
+pub type PageResult<T> = std::result::Result<Page<T>, OrmError>;
+
+#[async_trait::async_trait]
+pub trait PaginationExt<'db, C, M>
+where
+    C: ConnectionTrait,
+{
+    async fn page(self, db: &'db C, pagination: &Pagination) -> PageResult<M>;
+}
+
+#[async_trait::async_trait]
+impl<'db, C, M, E> PaginationExt<'db, C, M> for Select<E>
+where
+    C: ConnectionTrait,
+    E: EntityTrait<Model = M>,
+    M: FromQueryResult + Sized + Send + Sync + 'db,
+{
+    async fn page(self, db: &'db C, pagination: &Pagination) -> PageResult<M> {
+        let paginator = self.paginate(db, pagination.size);
+        let total = paginator.num_items().await?;
+        let content = paginator.fetch_page(pagination.page).await?;
+        Ok(Page::new(content, pagination, total))
+    }
+}
+
+#[async_trait::async_trait]
+impl<'db, C, S> PaginationExt<'db, C, S::Item> for Selector<S>
+where
+    C: ConnectionTrait,
+    S: SelectorTrait + Send + Sync + 'db,
+{
+    async fn page(self, db: &'db C, pagination: &Pagination) -> PageResult<S::Item> {
+        let paginator = self.paginate(db, pagination.size);
+        let total = paginator.num_items().await?;
+        let content = paginator.fetch_page(pagination.page).await?;
+        Ok(Page::new(content, pagination, total))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Page, Pagination};
+
+    #[test]
+    fn page_response_uses_zero_based_numbers_when_disabled() {
+        let pagination = Pagination {
+            page: 4,
+            size: 20,
+            one_indexed: false,
+        };
+        let page = Page::new(vec![1, 2, 3], &pagination, 83);
+
+        assert_eq!(page.page, 4);
+        assert_eq!(page.total_pages, 5);
+        assert!(!page.is_first());
+        assert!(page.is_last());
+    }
+
+    #[test]
+    fn page_response_uses_one_based_numbers_when_enabled() {
+        let pagination = Pagination {
+            page: 4,
+            size: 20,
+            one_indexed: true,
+        };
+        let page = Page::new(vec![1, 2, 3], &pagination, 83);
+
+        assert_eq!(page.page, 5);
+        assert_eq!(page.total_pages, 5);
+        assert!(!page.is_first());
+        assert!(page.is_last());
+    }
+
+    #[test]
+    fn empty_page_keeps_first_page_for_one_indexed_mode() {
+        let pagination = Pagination {
+            page: 0,
+            size: 20,
+            one_indexed: true,
+        };
+        let page = pagination.empty_page::<i32>();
+
+        assert_eq!(page.page, 1);
+        assert_eq!(page.total_pages, 0);
+        assert!(page.is_first());
+        assert!(page.is_last());
+    }
+}

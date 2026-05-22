@@ -1,0 +1,22 @@
+# ============================================================================
+# sea-orm-ext-macros — 过程宏
+#
+# 提供 DeriveAutoFill、DeriveSoftDelete、DeriveTenant 等派生宏，
+# 为非侵入式的 ORM 扩展提供编译期代码生成。
+# ============================================================================
+
+[package]
+name = "sea-orm-ext-macros"
+version = "0.0.2"
+edition = "2021"
+description = "Proc macros for sea-orm-ext: DeriveAutoFill, DeriveSoftDelete, DeriveTenant, etc."
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }   # Rust 语法解析
+quote = "1"                                                      # 将 Rust 语法树转回代码
+proc-macro2 = "1"                                                # proc-macro 的稳定 TokenStream
+heck = "0.5"                                                     # 命名风格转换（snake_case 等）
