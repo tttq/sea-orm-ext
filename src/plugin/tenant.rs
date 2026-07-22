@@ -2,6 +2,7 @@ use crate::{
     set_tenant_config, set_tenant_database_provider, set_tenant_id_provider, set_tenant_store,
     ConnectionStore, HashMapConnectionStore, SeaOrmExtConnection, TenantConfig, TenantDatabaseProvider, TenantIdProvider, TenantMode,
 };
+use std::collections::HashSet;
 #[cfg(feature = "summer-web")]
 use crate::{
     clear_tenant_context, get_tenant_database, get_tenant_mode,
@@ -125,16 +126,25 @@ pub struct TenantDatabaseEntryConfig {
     pub min_connections: Option<u32>,
     pub connect_timeout_secs: Option<u64>,
     pub acquire_timeout_secs: Option<u64>,
+    /// 连接池空闲连接超时（秒）。`None` 表示使用驱动默认值。
+    #[serde(default)]
+    pub idle_timeout_secs: Option<u64>,
+    /// 是否开启 SQL 日志。
+    #[serde(default)]
+    pub enable_logging: bool,
 }
 
 impl Default for TenantDatabaseEntryConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            max_connections: Some(10),
-            min_connections: Some(1),
+            // 默认 50：与 DatabaseConfig 保持一致，适合高并发生产环境
+            max_connections: Some(50),
+            min_connections: Some(5),
             connect_timeout_secs: Some(30),
             acquire_timeout_secs: Some(30),
+            idle_timeout_secs: Some(600),
+            enable_logging: false,
         }
     }
 }
@@ -179,7 +189,50 @@ pub struct TenantPluginConfig {
     #[serde(deserialize_with = "deserialize_string_or_int_opt")]
     pub default_tenant_id: Option<String>,
     pub databases: Option<Vec<TenantDatabaseEntry>>,
-    pub default_database: Option<TenantDatabaseEntryConfig>,
+    /// 默认数据库列表（fallback 链）。
+    ///
+    /// TOML 中使用数组表语法，可定义多个：
+    /// ```toml
+    /// [[summer-sea-orm-ext-tenant.default_databases]]
+    /// url = "postgres://..."
+    ///
+    /// [[summer-sea-orm-ext-tenant.default_databases]]
+    /// url = "postgres://..."
+    /// ```
+    ///
+    /// `#[serde(deserialize_with = "single_or_vec", alias = "default_database")]`
+    /// 同时兼容旧的单数 `[summer-sea-orm-ext-tenant.default_database]` 写法（会被解析为单元素列表）。
+    /// 注意：TOML 标准不允许同一个 `[table]` 表头重复定义，若需配置多个，请使用 `default_databases` 数组表语法。
+    #[serde(default, deserialize_with = "crate::config::single_or_vec", alias = "default_database")]
+    pub default_databases: Option<Vec<TenantDatabaseEntryConfig>>,
+    /// 忽略租户过滤的表名列表。
+    ///
+    /// 被列入此列表的表将跳过所有租户过滤（SELECT/INSERT/UPDATE/DELETE），
+    /// 适用于全局共享表（如字典表、配置表、系统日志表等）。
+    ///
+    /// **注意**：被列入此列表的表存在跨租户数据泄漏风险，请谨慎配置。
+    ///
+    /// # TOML 用法
+    ///
+    /// ```toml
+    /// [summer-sea-orm-ext-tenant]
+    /// ignored_tables = ["sys_dict", "sys_config", "sys_log"]
+    /// ```
+    #[serde(default)]
+    pub ignored_tables: Option<Vec<String>>,
+    /// 失败重试次数（仅针对连接类错误，默认 0 = 不重试）。
+    ///
+    /// 设置后，所有通过 `SeaOrmExtConnection` 执行的 SQL 操作在遇到连接类错误时
+    /// 会自动重试，采用指数退避策略（100ms, 200ms, 400ms, ...）。
+    ///
+    /// # TOML 用法
+    ///
+    /// ```toml
+    /// [summer-sea-orm-ext-tenant]
+    /// max_retries = 3
+    /// ```
+    #[serde(default)]
+    pub max_retries: Option<u32>,
     #[serde(skip)]
     pub tenant_id_provider: Option<Arc<dyn TenantIdProvider>>,
     #[serde(skip)]
@@ -194,7 +247,9 @@ impl std::fmt::Debug for TenantPluginConfig {
             .field("database_source", &self.database_source)
             .field("default_tenant_id", &self.default_tenant_id)
             .field("databases", &self.databases)
-            .field("default_database", &self.default_database)
+            .field("default_databases", &self.default_databases)
+            .field("ignored_tables", &self.ignored_tables)
+            .field("max_retries", &self.max_retries)
             .field("tenant_id_provider", &self.tenant_id_provider.as_ref().map(|_| "..."))
             .field("tenant_database_provider", &self.tenant_database_provider.as_ref().map(|_| "..."))
             .finish()
@@ -209,7 +264,9 @@ impl Default for TenantPluginConfig {
             database_source: Some("config".to_string()),
             default_tenant_id: None,
             databases: None,
-            default_database: None,
+            default_databases: None,
+            ignored_tables: None,
+            max_retries: None,
             tenant_id_provider: None,
             tenant_database_provider: None,
         }
@@ -231,20 +288,28 @@ impl Default for TenantPlugin {
 }
 
 async fn connect_from_entry(entry: &TenantDatabaseEntry) -> Result<DatabaseConnection, sea_orm::DbErr> {
-    let mut opt = sea_orm::ConnectOptions::new(&entry.database.url);
-    if let Some(max) = entry.database.max_connections {
+    connect_from_entry_config(&entry.database).await
+}
+
+/// 从 `TenantDatabaseEntryConfig` 创建数据库连接
+async fn connect_from_entry_config(entry: &TenantDatabaseEntryConfig) -> Result<DatabaseConnection, sea_orm::DbErr> {
+    let mut opt = sea_orm::ConnectOptions::new(&entry.url);
+    if let Some(max) = entry.max_connections {
         opt.max_connections(max);
     }
-    if let Some(min) = entry.database.min_connections {
+    if let Some(min) = entry.min_connections {
         opt.min_connections(min);
     }
-    if let Some(timeout) = entry.database.connect_timeout_secs {
+    if let Some(timeout) = entry.connect_timeout_secs {
         opt.connect_timeout(std::time::Duration::from_secs(timeout));
     }
-    if let Some(timeout) = entry.database.acquire_timeout_secs {
+    if let Some(timeout) = entry.acquire_timeout_secs {
         opt.acquire_timeout(std::time::Duration::from_secs(timeout));
     }
-    opt.sqlx_logging(false);
+    if let Some(timeout) = entry.idle_timeout_secs {
+        opt.idle_timeout(std::time::Duration::from_secs(timeout));
+    }
+    opt.sqlx_logging(entry.enable_logging);
     sea_orm::Database::connect(opt).await
 }
 
@@ -258,6 +323,15 @@ async fn connect_from_options(tenant_id: &Value, opt: &sea_orm::ConnectOptions) 
         tracing::error!("Failed to connect to database for tenant {:?}: {:?}", tenant_id, conn.as_ref().err());
     }
     conn
+}
+
+/// 创建带重试配置的 `SeaOrmExtConnection`
+fn build_ext_conn(conn: DatabaseConnection, max_retries: u32) -> SeaOrmExtConnection {
+    let ext = SeaOrmExtConnection::new(conn);
+    if max_retries > 0 {
+        ext.set_max_retries(max_retries);
+    }
+    ext
 }
 
 #[async_trait]
@@ -286,16 +360,60 @@ impl Plugin for TenantPlugin {
         let default_tenant_id: Option<Value> =
             config.default_tenant_id.map(|id| Value::String(Some(id)));
 
+        let ignored_tables: HashSet<String> = config.ignored_tables
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
         set_tenant_config(TenantConfig {
             enabled: true,
             mode,
             default_tenant_id,
-            ignored_tables: Default::default(),
+            ignored_tables,
         });
+
+        // 失败重试次数：从配置读取，默认 0（不重试）
+        let max_retries = config.max_retries.unwrap_or(0);
+        if max_retries > 0 {
+            tracing::info!(
+                "Database retry enabled: max_retries = {} (exponential backoff)",
+                max_retries
+            );
+        }
 
         if let Some(db) = app.get_component::<DatabaseConnection>() {
             crate::set_default_database(db);
             tracing::info!("Default database connection registered for tenant module");
+        }
+
+        // 注册默认数据库 fallback 链
+        if let Some(default_dbs) = &config.default_databases {
+            let mut connections = Vec::new();
+            for entry in default_dbs {
+                match connect_from_entry_config(entry).await {
+                    Ok(conn) => {
+                        tracing::info!(
+                            "Connected to default database (fallback chain): {}",
+                            entry.url
+                        );
+                        connections.push(conn);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to connect to default database {}: {} (skip, continue with remaining)",
+                            entry.url, e
+                        );
+                    }
+                }
+            }
+            if !connections.is_empty() {
+                crate::set_default_databases(connections);
+                tracing::info!(
+                    "Default database fallback chain registered with {} databases",
+                    config.default_databases.as_ref().map(|d| d.len()).unwrap_or(0)
+                );
+            }
         }
 
         if let Some(provider) = &config.tenant_id_provider {
@@ -331,7 +449,10 @@ impl Plugin for TenantPlugin {
                                         tenant_id,
                                         entry.database.url
                                     );
-                                    let _ = store.insert_ext(Value::String(Some(tenant_id.clone())), SeaOrmExtConnection::new(conn));
+                                    let _ = store.insert_ext(
+                                        Value::String(Some(tenant_id.clone())),
+                                        build_ext_conn(conn, max_retries),
+                                    );
                                 }
                                 Err(e) => {
                                     tracing::error!(
@@ -363,7 +484,10 @@ impl Plugin for TenantPlugin {
                         for (tenant_id, opts) in &databases {
                             match connect_from_options(tenant_id, opts).await {
                                 Ok(conn) => {
-                                    let _ = store.insert_ext(tenant_id.clone(), SeaOrmExtConnection::new(conn));
+                                    let _ = store.insert_ext(
+                                        tenant_id.clone(),
+                                        build_ext_conn(conn, max_retries),
+                                    );
                                     connected += 1;
                                 }
                                 Err(e) => {
@@ -397,7 +521,10 @@ impl Plugin for TenantPlugin {
                             let tenant_id = &entry.tenant_id;
                             match connect_from_entry(entry).await {
                                 Ok(conn) => {
-                                    let _ = store.insert_ext(Value::String(Some(tenant_id.clone())), SeaOrmExtConnection::new(conn));
+                                    let _ = store.insert_ext(
+                                        Value::String(Some(tenant_id.clone())),
+                                        build_ext_conn(conn, max_retries),
+                                    );
                                 }
                                 Err(e) => {
                                     tracing::error!(

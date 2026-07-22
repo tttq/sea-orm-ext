@@ -5,15 +5,21 @@ use sea_orm::{
 };
 use sea_query::{inject_parameters, MysqlQueryBuilder, PostgresQueryBuilder, SqliteQueryBuilder};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct SeaOrmExtConnection {
     inner: DatabaseConnection,
+    /// 重试配置：失败时的最大重试次数（0 = 不重试）
+    max_retries: std::sync::Arc<AtomicU32>,
 }
 
 impl SeaOrmExtConnection {
     pub fn new(conn: DatabaseConnection) -> Self {
-        Self { inner: conn }
+        Self {
+            inner: conn,
+            max_retries: std::sync::Arc::new(AtomicU32::new(0)),
+        }
     }
 
     pub fn inner(&self) -> &DatabaseConnection {
@@ -26,6 +32,65 @@ impl SeaOrmExtConnection {
 
     pub async fn close(self) -> Result<(), DbErr> {
         self.inner.close().await
+    }
+
+    /// 设置失败重试次数（仅针对连接类错误，默认 0 = 不重试）
+    ///
+    /// 重试仅对 `execute_raw` / `query_one_raw` / `query_all_raw` 生效，
+    /// 事务操作不重试（事务失败需要业务侧自行处理）。
+    pub fn set_max_retries(&self, max: u32) {
+        self.max_retries.store(max, Ordering::Relaxed);
+    }
+
+    /// 获取当前重试次数配置
+    pub fn get_max_retries(&self) -> u32 {
+        self.max_retries.load(Ordering::Relaxed)
+    }
+
+    /// 判断错误是否为可重试的连接类错误
+    fn is_retryable_error(err: &DbErr) -> bool {
+        let msg = err.to_string().to_lowercase();
+        // 常见的连接类错误关键词
+        msg.contains("connection")
+            || msg.contains("broken pipe")
+            || msg.contains("connection reset")
+            || msg.contains("connection refused")
+            || msg.contains("timed out")
+            || msg.contains("timeout")
+            || msg.contains("pool")
+            || msg.contains("server has gone away")
+            || msg.contains(" eof ")
+    }
+
+    /// 带重试的执行包装
+    async fn with_retry<F, Fut, T>(&self, op: F) -> Result<T, DbErr>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, DbErr>>,
+    {
+        let max = self.get_max_retries();
+        let mut attempt = 0u32;
+        loop {
+            match op().await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    if attempt >= max || !Self::is_retryable_error(&e) {
+                        return Err(e);
+                    }
+                    attempt += 1;
+                    // 指数退避：100ms, 200ms, 400ms, ...
+                    let backoff_ms = 100u64 * (1 << attempt.min(6));
+                    tracing::warn!(
+                        "DB operation failed (attempt {}/{}), retrying in {}ms: {}",
+                        attempt, max, backoff_ms, e
+                    );
+                    #[cfg(feature = "runtime-tokio")]
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    #[cfg(not(feature = "runtime-tokio"))]
+                    std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                }
+            }
+        }
     }
 }
 
@@ -71,24 +136,43 @@ impl ConnectionTrait for SeaOrmExtConnection {
 
     async fn execute_raw(&self, stmt: Statement) -> Result<ExecResult, DbErr> {
         log_statement(&stmt);
-        self.inner.execute_raw(stmt).await
+        let stmt_clone = stmt.clone();
+        self.with_retry(|| {
+            let stmt = stmt_clone.clone();
+            self.inner.execute_raw(stmt)
+        })
+        .await
     }
 
     async fn execute_unprepared(&self, sql: &str) -> Result<ExecResult, DbErr> {
         if crate::log::is_sql_log_enabled() {
             tracing::info!("[summer-sea-orm-ext SQL] {}", sql);
         }
-        self.inner.execute_unprepared(sql).await
+        let sql_owned = sql.to_string();
+        self.with_retry(|| {
+            self.inner.execute_unprepared(&sql_owned)
+        })
+        .await
     }
 
     async fn query_one_raw(&self, stmt: Statement) -> Result<Option<QueryResult>, DbErr> {
         log_statement(&stmt);
-        self.inner.query_one_raw(stmt).await
+        let stmt_clone = stmt.clone();
+        self.with_retry(|| {
+            let stmt = stmt_clone.clone();
+            self.inner.query_one_raw(stmt)
+        })
+        .await
     }
 
     async fn query_all_raw(&self, stmt: Statement) -> Result<Vec<QueryResult>, DbErr> {
         log_statement(&stmt);
-        self.inner.query_all_raw(stmt).await
+        let stmt_clone = stmt.clone();
+        self.with_retry(|| {
+            let stmt = stmt_clone.clone();
+            self.inner.query_all_raw(stmt)
+        })
+        .await
     }
 }
 

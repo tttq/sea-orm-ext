@@ -66,7 +66,20 @@ summer-sea-orm-ext = { version = "0.0.1", features = ["full"] }
 | `mysql` | MySQL 驱动 | sea-orm/sqlx-mysql |
 | `postgres` | PostgreSQL 驱动 | sea-orm/sqlx-postgres |
 | `sqlite` | SQLite 驱动 | sea-orm/sqlx-sqlite |
-| `rustls` | 使用 rustls 替代 native-tls | sea-orm/runtime-tokio-rustls |
+| `sqlx-all` | 一次性启用 MySQL + PostgreSQL + SQLite | sea-orm/sqlx-all |
+| `rustls` | 使用 rustls 替代 native-tls（别名） | runtime-tokio-rustls |
+| `runtime-tokio-native-tls` | Tokio + native-tls | sea-orm/runtime-tokio-native-tls |
+| `runtime-tokio-rustls` | Tokio + rustls | sea-orm/runtime-tokio-rustls |
+| `runtime-async-std-native-tls` | async-std + native-tls（需 `--no-default-features`） | sea-orm/runtime-async-std-native-tls |
+| `runtime-async-std-rustls` | async-std + rustls（需 `--no-default-features`） | sea-orm/runtime-async-std-rustls |
+
+> ⚠️ **运行时互斥**：`runtime-tokio-*` 与 `runtime-async-std-*` 互斥。如需使用 async-std 运行时，请使用 `--no-default-features` 关闭默认的 tokio 运行时后再启用对应 async-std 特性。
+
+#### 流式
+
+| Feature | 说明 | 透传到 |
+|---------|------|--------|
+| `stream` | 流式查询（sea-orm 默认开启） | sea-orm/stream |
 
 #### sea-orm 类型支持
 
@@ -91,6 +104,7 @@ summer-sea-orm-ext = { version = "0.0.1", features = ["full"] }
 | `postgres-vector` | pgvector 支持 |
 | `json-array` | JSON 数组 |
 | `sqlite-use-returning-for-3_35` | SQLite RETURNING |
+| `sqlite-no-row-value-before-3_15` | SQLite 兼容 3.15 之前版本 |
 | `mariadb-use-returning` | MariaDB RETURNING |
 | `debug-print` | 调试打印 |
 | `proxy` | 代理模式 |

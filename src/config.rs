@@ -40,6 +40,45 @@ where
     deserializer.deserialize_any(StringOrIntVisitor)
 }
 
+/// 反序列化"单值或数组"为 `Vec<T>`。
+///
+/// 用于兼容 TOML 中的两种写法：
+/// ```toml
+/// # 单值（旧写法，会被转成单元素列表）
+/// [default_database]
+/// url = "..."
+///
+/// # 数组（新写法，推荐）
+/// [[default_databases]]
+/// url = "..."
+/// ```
+pub(crate) fn single_or_vec<'de, T, D>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SingleOrVec<T> {
+        Vec(Vec<T>),
+        Single(T),
+    }
+
+    impl<T> From<SingleOrVec<T>> for Vec<T> {
+        fn from(v: SingleOrVec<T>) -> Vec<T> {
+            match v {
+                SingleOrVec::Vec(v) => v,
+                SingleOrVec::Single(x) => vec![x],
+            }
+        }
+    }
+
+    let opt: Option<SingleOrVec<T>> = Option::deserialize(deserializer)?;
+    Ok(opt.map(Into::into))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String,
@@ -56,12 +95,14 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            max_connections: Some(10),
-            min_connections: Some(1),
+            // 默认 50：在高并发场景下提供足够的连接数，
+            // 同时不会过度占用数据库资源（典型生产环境的合理值）。
+            max_connections: Some(50),
+            min_connections: Some(5),
             connect_timeout_secs: Some(30),
             acquire_timeout_secs: Some(30),
             enable_logging: false,
-            idle_timeout_secs: None,
+            idle_timeout_secs: Some(600),
         }
     }
 }
@@ -73,19 +114,15 @@ pub struct TenantDatabaseConfig {
     pub database: DatabaseConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TenantDatabaseConfigFile {
     pub tenants: Vec<TenantDatabaseConfig>,
-    pub default_database: Option<DatabaseConfig>,
-}
-
-impl Default for TenantDatabaseConfigFile {
-    fn default() -> Self {
-        Self {
-            tenants: Vec::new(),
-            default_database: None,
-        }
-    }
+    /// 默认数据库列表（fallback 链），TOML 中使用 `[[default_databases]]` 数组表语法。
+    ///
+    /// `#[serde(deserialize_with = "single_or_vec", alias = "default_database")]`
+    /// 同时兼容旧的单数 `[default_database]` 写法（会被解析为单元素列表）。
+    #[serde(default, deserialize_with = "single_or_vec", alias = "default_database")]
+    pub default_databases: Option<Vec<DatabaseConfig>>,
 }
 
 impl TenantDatabaseConfigFile {

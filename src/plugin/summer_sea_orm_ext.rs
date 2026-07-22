@@ -12,10 +12,10 @@ use summer::app::AppBuilder;
 use summer::App;
 use summer::error::Result;
 
-summer::submit_config_schema!("sea-orm", SeaOrmConfig);
+summer::submit_config_schema!("summer-sea-orm-ext", SeaOrmConfig);
 
 #[derive(Debug, Configurable, Clone, JsonSchema, Deserialize)]
-#[config_prefix = "sea-orm"]
+#[config_prefix = "summer-sea-orm-ext"]
 pub struct SeaOrmConfig {
     pub uri: String,
     #[serde(default)]
@@ -146,28 +146,34 @@ impl Plugin for SeaOrmPlugin {
         set_sql_log_enabled(config.enable_sql_log);
 
         if config.enable_sql_log {
-            tracing::info!("[sea-orm] SQL log enabled, complete SQL with parameters will be printed");
+            tracing::info!("[summer-sea-orm-ext] SQL log enabled, complete SQL with parameters will be printed");
         } else {
-            tracing::info!("[sea-orm] SQL log disabled");
+            tracing::info!("[summer-sea-orm-ext] SQL log disabled");
         }
 
         if let Some(component) = app.get_component::<FieldFillHandlerComponent>() {
             set_field_fill_handler(Box::new(ArcFieldFillHandler(component.handler.clone())));
-            tracing::info!("[sea-orm] Custom FieldFillHandler registered from component");
+            tracing::info!("[summer-sea-orm-ext] Custom FieldFillHandler registered from component");
         } else {
             let handler = ConfigFieldFillHandler::new(&config);
             set_field_fill_handler(Box::new(handler));
-            tracing::info!("[sea-orm] Config-based FieldFillHandler registered");
+            tracing::info!("[summer-sea-orm-ext] Config-based FieldFillHandler registered");
         }
 
-        let id_gen = DefaultIdGenerator::default();
-        set_id_generator(Box::new(id_gen));
+                // 仅在用户未显式设置 ID 生成器时，才注册默认生成器，避免覆盖业务侧的雪花算法等自定义实现。
+        if crate::get_id_generator().is_none() {
+            let id_gen = DefaultIdGenerator::default();
+            set_id_generator(Box::new(id_gen));
+            tracing::info!("[summer-sea-orm-ext] Default ID generator registered (user did not set one)");
+        } else {
+            tracing::info!("[summer-sea-orm-ext] Preserving user-registered ID generator");
+        }
 
         app.add_shutdown_hook(|app| Box::new(Self::close_db_connection(app)));
     }
 
     fn name(&self) -> &'static str {
-        "sea-orm"
+        "summer-sea-orm-ext"
     }
 }
 

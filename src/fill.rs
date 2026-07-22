@@ -29,15 +29,19 @@ fn fill_handler_store() -> &'static SharedFillHandler {
 /// 设置全局字段填充处理器。
 pub fn set_field_fill_handler(handler: Box<dyn FieldFillHandler>) {
     let store = fill_handler_store();
-    let mut guard = store.write().unwrap();
-    *guard = Some(Arc::from(handler));
+    match store.write() {
+        Ok(mut guard) => *guard = Some(Arc::from(handler)),
+        Err(_) => tracing::error!("FIELD-FILL-HANDLER: lock poisoned, set_field_fill_handler ignored"),
+    }
 }
 
 /// 清除全局字段填充处理器。
 pub fn clear_field_fill_handler() {
     let store = fill_handler_store();
-    let mut guard = store.write().unwrap();
-    *guard = None;
+    match store.write() {
+        Ok(mut guard) => *guard = None,
+        Err(_) => tracing::error!("FIELD-FILL-HANDLER: lock poisoned, clear_field_fill_handler ignored"),
+    }
 }
 
 /// 获取全局字段填充处理器的 Arc 引用。
@@ -47,8 +51,13 @@ pub fn clear_field_fill_handler() {
 /// 已获取的 Arc 仍然指向旧 handler，保证安全。
 pub fn get_field_fill_handler() -> Option<Arc<dyn FieldFillHandler>> {
     let store = fill_handler_store();
-    let guard = store.read().unwrap();
-    guard.clone()
+    match store.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("FIELD-FILL-HANDLER: lock poisoned, get_field_fill_handler returning None");
+            None
+        }
+    }
 }
 
 /// ID 生成器 trait。
@@ -103,22 +112,31 @@ fn id_generator_store() -> &'static SharedIdGenerator {
 /// 设置全局 ID 生成器。
 pub fn set_id_generator(generator: Box<dyn IdGenerator>) {
     let store = id_generator_store();
-    let mut guard = store.write().unwrap();
-    *guard = Some(Arc::from(generator));
+    match store.write() {
+        Ok(mut guard) => *guard = Some(Arc::from(generator)),
+        Err(_) => tracing::error!("ID-GENERATOR: lock poisoned, set_id_generator ignored"),
+    }
 }
 
 /// 清除全局 ID 生成器。
 pub fn clear_id_generator() {
     let store = id_generator_store();
-    let mut guard = store.write().unwrap();
-    *guard = None;
+    match store.write() {
+        Ok(mut guard) => *guard = None,
+        Err(_) => tracing::error!("ID-GENERATOR: lock poisoned, clear_id_generator ignored"),
+    }
 }
 
 /// 获取全局 ID 生成器的 Arc 引用。
 pub fn get_id_generator() -> Option<Arc<dyn IdGenerator>> {
     let store = id_generator_store();
-    let guard = store.read().unwrap();
-    guard.clone()
+    match store.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("ID-GENERATOR: lock poisoned, get_id_generator returning None");
+            None
+        }
+    }
 }
 
 /// 基于 UUID v4 的字符串 ID 生成器。

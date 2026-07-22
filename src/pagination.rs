@@ -194,7 +194,8 @@ impl<T> Page<T> {
         if size == 0 {
             return 0;
         }
-        (total / size) + u64::from(!total.is_multiple_of(size))
+        // 使用 % 运算符而非 is_multiple_of，以兼容 MSRV 1.81.0（is_multiple_of 需要 1.87.0）
+        (total / size) + u64::from(total % size != 0)
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, T> {

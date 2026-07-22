@@ -1,9 +1,75 @@
+# =============================================================================
+# summer-sea-orm-ext 配置示例
+#
+# 本文件展示了 summer-sea-orm-ext 所有可用的配置项。
+# 实际使用时按需取用，未列出的字段会使用代码中的默认值。
+#
+# 配置分为两段：
+#   [summer-sea-orm-ext]          - 基础 sea-orm 连接 + 自动填充规则
+#   [summer-sea-orm-ext-tenant]   - 多租户配置（可选）
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 基础配置：sea-orm 连接 + SQL 日志 + 默认填充用户 + fill_rules
+# -----------------------------------------------------------------------------
+[summer-sea-orm-ext]
+# 数据库连接字符串（必填）。示例使用 PostgreSQL：
+#   postgres://用户名:密码@主机:端口/数据库名
+# SQLite 示例：sqlite::memory: 或 sqlite:///path/to/db.sqlite
+uri = "postgres://user:pass@localhost:5432/app_db"
+
+# 是否开启 SQL 日志（默认 false）
+enable_sql_log = false
+
+# 连接池配置（默认值见括号）
+min_connections = 1     # 最小连接数（默认 1）
+max_connections = 10    # 最大连接数（默认 10）
+connect_timeout = 30000 # 连接超时，毫秒（默认无）
+idle_timeout = 600000   # 空闲超时，毫秒（默认无）
+acquire_timeout = 30000 # 获取连接超时，毫秒（默认无）
+
+# 默认填充用户名（当未注册 FieldFillHandler 时使用，默认 "system"）
+default_user = "system"
+
+# 静态填充规则（可选）。由 SeaOrmExtPlugin 解析后注册为默认 FieldFillHandler。
+# 优先级低于用户通过 set_field_fill_handler 注册的处理器。
+# operation 取值："insert" / "update" / "insert_update"
+[[summer-sea-orm-ext.fill_rules]]
+entity = "products"
+field = "created_by"
+operation = "insert"
+value = "system"
+
+[[summer-sea-orm-ext.fill_rules]]
+entity = "products"
+field = "updated_by"
+operation = "update"
+value = "system"
+
+# -----------------------------------------------------------------------------
+# 多租户配置
+#
+# mode:
+#   "table"    - 共享数据库，通过 tenant_id 列隔离（推荐起步方案）
+#   "database" - 每个租户独立数据库（强隔离）
+#
+# database_source（仅 mode = "database" 时生效）:
+#   "config" - 从本文件 [[summer-sea-orm-ext-tenant.databases]] 列表连接
+#   "custom" - 调用 TenantDatabaseProvider::provide() 获取连接配置
+#
+# default_tenant_id:
+#   未通过 TenantGuard 显式设置租户时使用的兜底租户 ID。
+#   可为字符串或整数（代码中统一转成 String）。
+# -----------------------------------------------------------------------------
 [summer-sea-orm-ext-tenant]
 enabled = true
 mode = "database"
 database_source = "config"
 default_tenant_id = "1876543210000000001"
 
+# -----------------------------------------------------------------------------
+# 各租户的独立数据库配置（database_source = "config" 时使用）
+# -----------------------------------------------------------------------------
 [[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000001"
 [summer-sea-orm-ext-tenant.databases.database]
@@ -31,6 +97,33 @@ min_connections = 3
 connect_timeout_secs = 60
 acquire_timeout_secs = 60
 
-[summer-sea-orm-ext]
-default_user = "system"
-enable_sql_log = false
+# -----------------------------------------------------------------------------
+# 默认数据库列表（可选，fallback 链）
+#
+# 当请求的 tenant_id 在 databases 列表中找不到时，按顺序回退使用这里的连接。
+# 通常用于存放跨租户的共享数据（如系统配置、字典表）。
+#
+# 重要：TOML 标准不允许同一个 [table] 表头重复定义。
+# 若需要配置多个默认数据库，必须使用数组表语法 [[...default_databases]]，
+# 而不是重复写 [summer-sea-orm-ext-tenant.default_database]。
+#
+# 数组表语法（推荐，可定义多个）：
+[[summer-sea-orm-ext-tenant.default_databases]]
+url = "postgres://user:pass@localhost:5432/default_db"
+max_connections = 10
+min_connections = 1
+connect_timeout_secs = 30
+acquire_timeout_secs = 30
+
+[[summer-sea-orm-ext-tenant.default_databases]]
+url = "postgres://user:pass@localhost:5432/default_db_fallback"
+max_connections = 5
+min_connections = 1
+connect_timeout_secs = 30
+acquire_timeout_secs = 30
+
+# 旧的单数写法仍然兼容（只能定义一个，会被解析为单元素列表）：
+# [summer-sea-orm-ext-tenant.default_database]
+# url = "postgres://user:pass@localhost:5432/default_db"
+# -----------------------------------------------------------------------------
+

@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
 use sea_query::Value;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::SeaOrmExtConnection;
+
+/// 租户数据库连接构建器函数类型。
+pub type TenantDatabaseBuilder =
+    Box<dyn Fn(&Value) -> Result<DatabaseConnection, DbErr> + Send + Sync>;
 
 pub trait ConnectionStore: Send + Sync + 'static {
     fn get(&self, tenant_id: &Value) -> Option<DatabaseConnection>;
@@ -43,14 +46,20 @@ fn value_to_string_err(tenant_id: &Value) -> Result<String, DbErr> {
     value_to_string(tenant_id).ok_or_else(|| DbErr::Type("Invalid tenant ID type, expected String or integer".to_owned()))
 }
 
+/// 基于 `dashmap` 的并发连接存储。
+///
+/// 使用 DashMap 替代 `RwLock<HashMap>`，提供更细粒度的锁：
+/// - DashMap 内部分片（默认 16 个 shard），每个 shard 独立加锁
+/// - 读多写少场景下性能显著优于 `RwLock<HashMap>`
+/// - 不会因为单个租户的写操作阻塞其他租户的读操作
 pub struct HashMapConnectionStore {
-    connections: RwLock<HashMap<String, SeaOrmExtConnection>>,
+    connections: dashmap::DashMap<String, SeaOrmExtConnection>,
 }
 
 impl HashMapConnectionStore {
     pub fn new() -> Self {
         Self {
-            connections: RwLock::new(HashMap::new()),
+            connections: dashmap::DashMap::new(),
         }
     }
 }
@@ -64,55 +73,44 @@ impl Default for HashMapConnectionStore {
 impl ConnectionStore for HashMapConnectionStore {
     fn get(&self, tenant_id: &Value) -> Option<DatabaseConnection> {
         let key = value_to_string(tenant_id)?;
-        let connections = self.connections.read().ok()?;
-        connections.get(&key).map(|c| c.inner().clone())
+        self.connections.get(&key).map(|c| c.inner().clone())
     }
 
     fn insert(&self, tenant_id: Value, conn: DatabaseConnection) -> Result<(), DbErr> {
         let key = value_to_string_err(&tenant_id)?;
-        let mut connections = self.connections.write().map_err(|_| {
-            DbErr::Custom("Lock poisoned".to_owned())
-        })?;
-        connections.insert(key, SeaOrmExtConnection::new(conn));
+        self.connections.insert(key, SeaOrmExtConnection::new(conn));
         Ok(())
     }
 
     fn remove(&self, tenant_id: &Value) -> Result<(), DbErr> {
         let key = value_to_string_err(tenant_id)?;
-        let mut connections = self.connections.write().map_err(|_| {
-            DbErr::Custom("Lock poisoned".to_owned())
-        })?;
-        connections.remove(&key);
+        self.connections.remove(&key);
         Ok(())
     }
 
     fn len(&self) -> usize {
-        self.connections.read().map(|c| c.len()).unwrap_or(0)
+        self.connections.len()
     }
 
     fn is_empty(&self) -> bool {
-        self.connections.read().map(|c| c.is_empty()).unwrap_or(true)
+        self.connections.is_empty()
     }
 
     fn get_all_tenants(&self) -> Vec<Value> {
         self.connections
-            .read()
-            .map(|c| c.keys().map(|v| Value::String(Some(v.clone()))).collect())
-            .unwrap_or_default()
+            .iter()
+            .map(|r| Value::String(Some(r.key().clone())))
+            .collect()
     }
 
     fn get_ext(&self, tenant_id: &Value) -> Option<SeaOrmExtConnection> {
         let key = value_to_string(tenant_id)?;
-        let connections = self.connections.read().ok()?;
-        connections.get(&key).cloned()
+        self.connections.get(&key).map(|c| c.clone())
     }
 
     fn insert_ext(&self, tenant_id: Value, conn: SeaOrmExtConnection) -> Result<(), DbErr> {
         let key = value_to_string_err(&tenant_id)?;
-        let mut connections = self.connections.write().map_err(|_| {
-            DbErr::Custom("Lock poisoned".to_owned())
-        })?;
-        connections.insert(key, conn);
+        self.connections.insert(key, conn);
         Ok(())
     }
 }
@@ -159,13 +157,13 @@ impl<C: ConnectionTrait + Send + Sync> ConnectionTrait for TenantConnectionWrapp
 
 pub struct TenantDatabaseManager {
     store: Arc<dyn ConnectionStore>,
-    builder: Box<dyn Fn(&Value) -> Result<DatabaseConnection, DbErr> + Send + Sync>,
+    builder: TenantDatabaseBuilder,
 }
 
 impl TenantDatabaseManager {
     pub fn new(
         store: Arc<dyn ConnectionStore>,
-        builder: Box<dyn Fn(&Value) -> Result<DatabaseConnection, DbErr> + Send + Sync>,
+        builder: TenantDatabaseBuilder,
     ) -> Self {
         Self { store, builder }
     }
@@ -202,41 +200,56 @@ impl TenantDatabaseManager {
     }
 }
 
+// ============================================================================
+// Tokio 异步支持模块
+// ============================================================================
+
 #[cfg(feature = "runtime-tokio")]
 mod tokio_support {
     use super::*;
     use sea_orm::{ConnectOptions, DatabaseConnection, DbErr};
 
+    /// 基于 `dashmap` 的 Tokio 异步连接存储。
+    ///
+    /// 使用 DashMap 作为底层存储（无锁读、分片写），
+    /// 避免在 async 上下文中持有 `std::sync::RwLock` 跨 `.await`。
+    ///
+    /// 对于需要在 async 上下文中创建连接的场景，使用 `connect()` 方法。
     pub struct TokioConnectionStore {
-        connections: std::sync::RwLock<HashMap<String, SeaOrmExtConnection>>,
+        connections: dashmap::DashMap<String, SeaOrmExtConnection>,
     }
 
     impl TokioConnectionStore {
         pub fn new() -> Self {
             Self {
-                connections: std::sync::RwLock::new(HashMap::new()),
+                connections: dashmap::DashMap::new(),
             }
         }
 
+        /// 异步创建数据库连接并缓存。
+        ///
+        /// 此方法使用传入的 `ConnectOptions` 而非硬编码参数，
+        /// 允许调用方完全控制连接池配置。
         pub async fn connect(
             &self,
             tenant_id: String,
             url: &str,
         ) -> Result<DatabaseConnection, DbErr> {
             let mut opt = ConnectOptions::new(url.to_owned());
-            opt.max_connections(10)
-                .min_connections(1)
+            opt.max_connections(50)
+                .min_connections(5)
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .acquire_timeout(std::time::Duration::from_secs(30))
+                .idle_timeout(std::time::Duration::from_secs(600))
                 .sqlx_logging(false);
 
             let conn = sea_orm::Database::connect(opt).await?;
             let ext_conn = SeaOrmExtConnection::new(conn);
-            let mut connections = self.connections.write().unwrap();
-            connections.insert(tenant_id, ext_conn.clone());
+            self.connections.insert(tenant_id, ext_conn.clone());
             Ok(ext_conn.inner().clone())
         }
 
+        /// 异步创建数据库连接（使用传入的 ConnectOptions）并缓存。
         pub async fn connect_with_options(
             &self,
             tenant_id: String,
@@ -244,8 +257,7 @@ mod tokio_support {
         ) -> Result<DatabaseConnection, DbErr> {
             let conn = sea_orm::Database::connect(options).await?;
             let ext_conn = SeaOrmExtConnection::new(conn);
-            let mut connections = self.connections.write().unwrap();
-            connections.insert(tenant_id, ext_conn.clone());
+            self.connections.insert(tenant_id, ext_conn.clone());
             Ok(ext_conn.inner().clone())
         }
     }
@@ -259,55 +271,44 @@ mod tokio_support {
     impl ConnectionStore for TokioConnectionStore {
         fn get(&self, tenant_id: &Value) -> Option<DatabaseConnection> {
             let key = value_to_string(tenant_id)?;
-            let connections = self.connections.read().ok()?;
-            connections.get(&key).map(|c| c.inner().clone())
+            self.connections.get(&key).map(|c| c.inner().clone())
         }
 
         fn insert(&self, tenant_id: Value, conn: DatabaseConnection) -> Result<(), DbErr> {
             let key = value_to_string_err(&tenant_id)?;
-            let mut connections = self.connections.write().map_err(|_| {
-                DbErr::Custom("Lock poisoned".to_owned())
-            })?;
-            connections.insert(key, SeaOrmExtConnection::new(conn));
+            self.connections.insert(key, SeaOrmExtConnection::new(conn));
             Ok(())
         }
 
         fn remove(&self, tenant_id: &Value) -> Result<(), DbErr> {
             let key = value_to_string_err(tenant_id)?;
-            let mut connections = self.connections.write().map_err(|_| {
-                DbErr::Custom("Lock poisoned".to_owned())
-            })?;
-            connections.remove(&key);
+            self.connections.remove(&key);
             Ok(())
         }
 
         fn len(&self) -> usize {
-            self.connections.read().map(|c| c.len()).unwrap_or(0)
+            self.connections.len()
         }
 
         fn is_empty(&self) -> bool {
-            self.connections.read().map(|c| c.is_empty()).unwrap_or(true)
+            self.connections.is_empty()
         }
 
         fn get_all_tenants(&self) -> Vec<Value> {
             self.connections
-                .read()
-                .map(|c| c.keys().map(|v| Value::String(Some(v.clone()))).collect())
-                .unwrap_or_default()
+                .iter()
+                .map(|r| Value::String(Some(r.key().clone())))
+                .collect()
         }
 
         fn get_ext(&self, tenant_id: &Value) -> Option<SeaOrmExtConnection> {
             let key = value_to_string(tenant_id)?;
-            let connections = self.connections.read().ok()?;
-            connections.get(&key).cloned()
+            self.connections.get(&key).map(|c| c.clone())
         }
 
         fn insert_ext(&self, tenant_id: Value, conn: SeaOrmExtConnection) -> Result<(), DbErr> {
             let key = value_to_string_err(&tenant_id)?;
-            let mut connections = self.connections.write().map_err(|_| {
-                DbErr::Custom("Lock poisoned".to_owned())
-            })?;
-            connections.insert(key, conn);
+            self.connections.insert(key, conn);
             Ok(())
         }
     }
@@ -332,14 +333,18 @@ mod async_support {
         async fn get_all_tenants(&self) -> Vec<Value>;
     }
 
+    /// 基于 `tokio::sync::RwLock` 的异步连接存储。
+    ///
+    /// 适用于需要在 async 上下文中持有锁跨 `.await` 的场景。
+    /// 对于一般场景，推荐使用 `HashMapConnectionStore`（基于 dashmap，无锁读）。
     pub struct TokioAsyncConnectionStore {
-        connections: RwLock<HashMap<String, SeaOrmExtConnection>>,
+        connections: RwLock<std::collections::HashMap<String, SeaOrmExtConnection>>,
     }
 
     impl TokioAsyncConnectionStore {
         pub fn new() -> Self {
             Self {
-                connections: RwLock::new(HashMap::new()),
+                connections: RwLock::new(std::collections::HashMap::new()),
             }
         }
     }

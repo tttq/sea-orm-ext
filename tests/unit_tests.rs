@@ -17,10 +17,12 @@ use std::sync::Arc;
 fn test_database_config_default() {
     let config = DatabaseConfig::default();
     assert!(config.url.is_empty());
-    assert_eq!(config.max_connections, Some(10));
-    assert_eq!(config.min_connections, Some(1));
+    assert_eq!(config.max_connections, Some(50));
+    assert_eq!(config.min_connections, Some(5));
     assert_eq!(config.connect_timeout_secs, Some(30));
     assert_eq!(config.acquire_timeout_secs, Some(30));
+    assert_eq!(config.idle_timeout_secs, Some(600));
+    assert!(!config.enable_logging);
 }
 
 #[test]
@@ -65,7 +67,7 @@ fn test_tenant_database_config_file_from_toml() {
 fn test_tenant_database_config_file_default() {
     let config = TenantDatabaseConfigFile::default();
     assert!(config.tenants.is_empty());
-    assert!(config.default_database.is_none());
+    assert!(config.default_databases.is_none());
 }
 
 #[test]
@@ -152,6 +154,76 @@ fn test_tenant_plugin_config_from_toml_with_integer_tenant_id() {
 fn test_tenant_database_config_file_invalid_toml() {
     let result = TenantDatabaseConfigFile::from_toml("invalid toml {{{");
     assert!(result.is_err());
+}
+
+/// 验证 `[[default_databases]]` 数组表语法可以解析多个默认数据库。
+#[test]
+fn test_tenant_database_config_file_multiple_default_databases() {
+    let toml_str = r#"
+        [[tenants]]
+        tenant_id = "1"
+        [tenants.database]
+        url = "sqlite::memory:"
+
+        [[default_databases]]
+        url = "postgres://user:pass@localhost:5432/default_db"
+        max_connections = 10
+
+        [[default_databases]]
+        url = "postgres://user:pass@localhost:5432/default_db_fallback"
+        max_connections = 5
+    "#;
+
+    let config = TenantDatabaseConfigFile::from_toml(toml_str).unwrap();
+    let defaults = config.default_databases.expect("default_databases should be parsed");
+    assert_eq!(defaults.len(), 2, "should parse 2 default databases");
+    assert_eq!(defaults[0].url, "postgres://user:pass@localhost:5432/default_db");
+    assert_eq!(defaults[0].max_connections, Some(10));
+    assert_eq!(defaults[1].url, "postgres://user:pass@localhost:5432/default_db_fallback");
+    assert_eq!(defaults[1].max_connections, Some(5));
+}
+
+/// 验证旧的单数 `[default_database]` 写法仍然兼容（被解析为单元素列表）。
+#[test]
+fn test_tenant_database_config_file_legacy_single_default_database() {
+    let toml_str = r#"
+        [[tenants]]
+        tenant_id = "1"
+        [tenants.database]
+        url = "sqlite::memory:"
+
+        [default_database]
+        url = "postgres://user:pass@localhost:5432/legacy_db"
+        max_connections = 3
+    "#;
+
+    let config = TenantDatabaseConfigFile::from_toml(toml_str).unwrap();
+    let defaults = config.default_databases.expect("legacy default_database should be parsed via alias");
+    assert_eq!(defaults.len(), 1, "legacy single config should be parsed as 1-element list");
+    assert_eq!(defaults[0].url, "postgres://user:pass@localhost:5432/legacy_db");
+    assert_eq!(defaults[0].max_connections, Some(3));
+}
+
+/// 验证重复的 `[default_database]` 表头会报错（这是 TOML 标准的限制，
+/// 用户必须改用 `[[default_databases]]` 数组表语法）。
+#[test]
+fn test_tenant_database_config_file_duplicate_default_database_table_header_errors() {
+    // 同一个 [table] 表头重复定义 - TOML 标准禁止，应报错
+    let toml_str = r#"
+        [[tenants]]
+        tenant_id = "1"
+        [tenants.database]
+        url = "sqlite::memory:"
+
+        [default_database]
+        url = "postgres://user:pass@localhost:5432/db1"
+
+        [default_database]
+        url = "postgres://user:pass@localhost:5432/db2"
+    "#;
+
+    let result = TenantDatabaseConfigFile::from_toml(toml_str);
+    assert!(result.is_err(), "duplicate [default_database] table header should error per TOML spec");
 }
 
 // ===========================================================================

@@ -11,16 +11,11 @@ use std::future::Future;
 
 use crate::tenant_store::ConnectionStore;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TenantMode {
+    #[default]
     Table,
     Database,
-}
-
-impl Default for TenantMode {
-    fn default() -> Self {
-        Self::Table
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -52,8 +47,10 @@ fn tenant_config_store() -> &'static SharedTenantConfig {
 
 pub fn set_tenant_config(config: TenantConfig) {
     let store = tenant_config_store();
-    let mut guard = store.write().unwrap();
-    *guard = Some(Arc::new(config));
+    match store.write() {
+        Ok(mut guard) => *guard = Some(Arc::new(config)),
+        Err(_) => tracing::error!("TENANT-CONFIG: lock poisoned, set_tenant_config ignored"),
+    }
 }
 
 type SharedTenantIdProvider = Arc<RwLock<Option<Arc<dyn TenantIdProvider>>>>;
@@ -66,14 +63,21 @@ fn tenant_id_provider_store() -> &'static SharedTenantIdProvider {
 
 pub fn set_tenant_id_provider(provider: Arc<dyn TenantIdProvider>) {
     let store = tenant_id_provider_store();
-    let mut guard = store.write().unwrap();
-    *guard = Some(provider);
+    match store.write() {
+        Ok(mut guard) => *guard = Some(provider),
+        Err(_) => tracing::error!("TENANT-ID-PROVIDER: lock poisoned, set_tenant_id_provider ignored"),
+    }
 }
 
 pub fn get_tenant_id_provider() -> Option<Arc<dyn TenantIdProvider>> {
     let store = tenant_id_provider_store();
-    let guard = store.read().unwrap();
-    guard.clone()
+    match store.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("TENANT-ID-PROVIDER: lock poisoned, get_tenant_id_provider returning None");
+            None
+        }
+    }
 }
 
 type SharedTenantDatabaseProvider = Arc<RwLock<Option<Arc<dyn TenantDatabaseProvider>>>>;
@@ -86,14 +90,21 @@ fn tenant_database_provider_store() -> &'static SharedTenantDatabaseProvider {
 
 pub fn set_tenant_database_provider(provider: Arc<dyn TenantDatabaseProvider>) {
     let store = tenant_database_provider_store();
-    let mut guard = store.write().unwrap();
-    *guard = Some(provider);
+    match store.write() {
+        Ok(mut guard) => *guard = Some(provider),
+        Err(_) => tracing::error!("TENANT-DATABASE-PROVIDER: lock poisoned, set_tenant_database_provider ignored"),
+    }
 }
 
 pub fn get_tenant_database_provider() -> Option<Arc<dyn TenantDatabaseProvider>> {
     let store = tenant_database_provider_store();
-    let guard = store.read().unwrap();
-    guard.clone()
+    match store.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("TENANT-DATABASE-PROVIDER: lock poisoned, get_tenant_database_provider returning None");
+            None
+        }
+    }
 }
 
 pub trait TenantIdProvider: Send + Sync + 'static {
@@ -106,14 +117,21 @@ pub trait TenantDatabaseProvider: Send + Sync + 'static {
 
 pub fn clear_tenant_config() {
     let store = tenant_config_store();
-    let mut guard = store.write().unwrap();
-    *guard = None;
+    match store.write() {
+        Ok(mut guard) => *guard = None,
+        Err(_) => tracing::error!("TENANT-CONFIG: lock poisoned, clear_tenant_config ignored"),
+    }
 }
 
 pub fn get_tenant_config() -> Option<Arc<TenantConfig>> {
     let store = tenant_config_store();
-    let guard = store.read().unwrap();
-    guard.clone()
+    match store.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("TENANT-CONFIG: lock poisoned, get_tenant_config returning None");
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +145,7 @@ tokio::task_local! {
 }
 
 thread_local! {
-    static THREAD_TENANT_CONTEXT: RefCell<Option<TenantContext>> = RefCell::new(None);
+    static THREAD_TENANT_CONTEXT: RefCell<Option<TenantContext>> = const { RefCell::new(None) };
 }
 
 #[cfg(feature = "runtime-tokio")]
@@ -234,7 +252,7 @@ pub fn is_tenant_enforced() -> bool {
 }
 
 thread_local! {
-    static TENANT_FILTER_DISABLED: Cell<bool> = Cell::new(false);
+    static TENANT_FILTER_DISABLED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn is_tenant_filter_disabled() -> bool {
@@ -243,6 +261,12 @@ fn is_tenant_filter_disabled() -> bool {
 
 pub struct TenantIgnoreGuard {
     _private: (),
+}
+
+impl Default for TenantIgnoreGuard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TenantIgnoreGuard {
@@ -274,13 +298,26 @@ pub fn try_get_tenant_id() -> Result<Value, DbErr> {
     })
 }
 
+/// 获取当前租户 ID，若未设置则返回 `Value::Int(None)`（SQL NULL）并记录错误（**不会 panic**）。
+///
+/// 历史版本此函数会 panic，导致整个进程崩溃。现在改为 panic-free：
+/// - 若未设置 tenant context，记录 `tracing::error` 并返回 `Value::Int(None)`（表示 SQL NULL）
+/// - SQL `WHERE tenant_id = NULL` 永远为 false，查询返回空集（安全失败）
+/// - 调用方应在调用前主动检查 `get_current_tenant_id()` 或使用 `try_get_tenant_id()?`
 pub fn require_tenant_id() -> Value {
-    get_current_tenant_id().unwrap_or_else(|| {
-        panic!(
-            "TABLE-ISOLATION: tenant ID is required but unavailable. \
-             Ensure tenant context has been set via set_tenant_context() or TenantGuard::set()."
-        )
-    })
+    match get_current_tenant_id() {
+        Some(id) => id,
+        None => {
+            tracing::error!(
+                "TABLE-ISOLATION: tenant ID is required but unavailable. \
+                 Returning Value::Int(None) (SQL NULL, will match no rows). \
+                 Ensure tenant context has been set via set_tenant_context() or TenantGuard::set()."
+            );
+            // sea-query 1.0 移除了 Value::Null 变体；使用 Value::Int(None) 表示 SQL NULL。
+            // SQL 中 `WHERE col = NULL` 永远返回 false，保证安全失败。
+            Value::Int(None)
+        }
+    }
 }
 
 pub trait TenantEntity: EntityTrait {
@@ -301,7 +338,7 @@ where
             return self;
         }
         let table = E::default().table_name();
-        if is_table_tenant_ignored(table.as_ref()) {
+        if is_table_tenant_ignored(table) {
             return self;
         }
         let tenant_id = require_tenant_id();
@@ -316,7 +353,7 @@ where
     if !is_tenant_enforced() {
         return stmt;
     }
-    if is_table_tenant_ignored(E::default().table_name().as_ref()) {
+    if is_table_tenant_ignored(E::default().table_name()) {
         return stmt;
     }
     let tenant_id = require_tenant_id();
@@ -331,7 +368,7 @@ where
     if !is_tenant_enforced() {
         return stmt;
     }
-    if is_table_tenant_ignored(E::default().table_name().as_ref()) {
+    if is_table_tenant_ignored(E::default().table_name()) {
         return stmt;
     }
     let tenant_id = require_tenant_id();
@@ -364,20 +401,29 @@ fn tenant_store_inner() -> &'static SharedTenantStore {
 
 pub fn set_tenant_store(store: Arc<dyn ConnectionStore>) {
     let inner = tenant_store_inner();
-    let mut guard = inner.write().unwrap();
-    *guard = Some(store);
+    match inner.write() {
+        Ok(mut guard) => *guard = Some(store),
+        Err(_) => tracing::error!("TENANT-STORE: lock poisoned, set_tenant_store ignored"),
+    }
 }
 
 pub fn clear_tenant_store() {
     let inner = tenant_store_inner();
-    let mut guard = inner.write().unwrap();
-    *guard = None;
+    match inner.write() {
+        Ok(mut guard) => *guard = None,
+        Err(_) => tracing::error!("TENANT-STORE: lock poisoned, clear_tenant_store ignored"),
+    }
 }
 
 pub fn get_tenant_store() -> Option<Arc<dyn ConnectionStore>> {
     let inner = tenant_store_inner();
-    let guard = inner.read().unwrap();
-    guard.clone()
+    match inner.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("TENANT-STORE: lock poisoned, get_tenant_store returning None");
+            None
+        }
+    }
 }
 
 type SharedDefaultDb = Arc<RwLock<Option<DatabaseConnection>>>;
@@ -390,14 +436,93 @@ fn default_db_inner() -> &'static SharedDefaultDb {
 
 pub fn set_default_database(db: DatabaseConnection) {
     let inner = default_db_inner();
-    let mut guard = inner.write().unwrap();
-    *guard = Some(db);
+    match inner.write() {
+        Ok(mut guard) => *guard = Some(db),
+        Err(_) => tracing::error!("DEFAULT-DB: lock poisoned, set_default_database ignored"),
+    }
 }
 
 pub fn get_default_database() -> Option<DatabaseConnection> {
     let inner = default_db_inner();
-    let guard = inner.read().unwrap();
-    guard.clone()
+    match inner.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("DEFAULT-DB: lock poisoned, get_default_database returning None");
+            None
+        }
+    }
+}
+
+// ============================================================================
+// 默认数据库 fallback 链
+// ============================================================================
+
+/// 默认数据库 fallback 链：主库故障时按顺序尝试 fallback 库
+type SharedDefaultDbs = Arc<RwLock<Vec<DatabaseConnection>>>;
+
+static DEFAULT_DBS: OnceLock<SharedDefaultDbs> = OnceLock::new();
+
+fn default_dbs_inner() -> &'static SharedDefaultDbs {
+    DEFAULT_DBS.get_or_init(|| Arc::new(RwLock::new(Vec::new())))
+}
+
+/// 设置默认数据库 fallback 链（按顺序，第一个为主库，后续为 fallback）
+pub fn set_default_databases(dbs: Vec<DatabaseConnection>) {
+    let inner = default_dbs_inner();
+    match inner.write() {
+        Ok(mut guard) => *guard = dbs,
+        Err(_) => tracing::error!("DEFAULT-DBS: lock poisoned, set_default_databases ignored"),
+    }
+}
+
+/// 获取默认数据库 fallback 链
+pub fn get_default_databases() -> Vec<DatabaseConnection> {
+    let inner = default_dbs_inner();
+    match inner.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("DEFAULT-DBS: lock poisoned, get_default_databases returning empty vec");
+            Vec::new()
+        }
+    }
+}
+
+/// 从 fallback 链中获取第一个可用的数据库连接（同步版本，不进行健康检查）。
+///
+/// - 优先返回主库（链中第一个）
+/// - 若 fallback 链为空，回退到单库模式
+///
+/// **注意**：sea-orm 2.0 移除了 `is_closed()` 方法，此同步版本无法进行健康检查。
+/// 若需要健康检查，请使用 [`get_available_default_database_async`]。
+/// 失败的连接会由 `SeaOrmExtConnection` 的重试机制处理。
+pub fn get_available_default_database() -> Option<DatabaseConnection> {
+    let dbs = get_default_databases();
+    if let Some(db) = dbs.first() {
+        return Some(db.clone());
+    }
+    // fallback 链为空，回退到单库模式
+    get_default_database()
+}
+
+/// 从 fallback 链中获取第一个可用的数据库连接（异步版本，带健康检查）。
+///
+/// 通过 `ping()` 探活，依次尝试 fallback 链中的每个数据库，返回第一个可用的。
+#[cfg(feature = "runtime-tokio")]
+pub async fn get_available_default_database_async() -> Option<DatabaseConnection> {
+    let dbs = get_default_databases();
+    for db in &dbs {
+        match db.ping().await {
+            Ok(()) => return Some(db.clone()),
+            Err(e) => {
+                tracing::warn!(
+                    "DATABASE-FAILOVER: database ping failed, trying next in fallback chain: {}",
+                    e
+                );
+            }
+        }
+    }
+    // fallback 链全部不可用或链为空，回退到单库模式
+    get_default_database()
 }
 
 #[cfg(feature = "runtime-tokio")]
@@ -417,15 +542,15 @@ async fn connect_and_cache(
 
 pub fn get_tenant_database() -> Result<Option<DatabaseConnection>, DbErr> {
     if !is_tenant_enabled() {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database());
     }
 
     if get_tenant_mode() != Some(TenantMode::Database) {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database());
     }
 
     let Some(tenant_id) = get_current_tenant_id() else {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database());
     };
 
     get_database_for_tenant(&tenant_id)
@@ -433,11 +558,11 @@ pub fn get_tenant_database() -> Result<Option<DatabaseConnection>, DbErr> {
 
 pub fn get_database_for_tenant(tenant_id: &Value) -> Result<Option<DatabaseConnection>, DbErr> {
     if !is_tenant_enabled() {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database());
     }
 
     if get_tenant_mode() != Some(TenantMode::Database) {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database());
     }
 
     let Some(store) = get_tenant_store() else {
@@ -447,20 +572,27 @@ pub fn get_database_for_tenant(tenant_id: &Value) -> Result<Option<DatabaseConne
     };
 
     if let Some(conn) = store.get(tenant_id) {
+        // sea-orm 2.0 移除了 is_closed() 同步方法，直接返回连接。
+        // 失败的连接会由 SeaOrmExtConnection 的重试机制处理。
         return Ok(Some(conn));
     }
 
-    Ok(None)
+    // 未找到该租户的连接，尝试 fallback 链
+    tracing::warn!(
+        "DATABASE-FAILOVER: no connection for tenant {:?}, trying fallback chain",
+        tenant_id
+    );
+    Ok(get_available_default_database())
 }
 
 #[cfg(feature = "runtime-tokio")]
 pub async fn get_database_for_tenant_async(tenant_id: &Value) -> Result<Option<DatabaseConnection>, DbErr> {
     if !is_tenant_enabled() {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database_async().await);
     }
 
     if get_tenant_mode() != Some(TenantMode::Database) {
-        return Ok(get_default_database());
+        return Ok(get_available_default_database_async().await);
     }
 
     let Some(store) = get_tenant_store() else {
@@ -470,23 +602,42 @@ pub async fn get_database_for_tenant_async(tenant_id: &Value) -> Result<Option<D
     };
 
     if let Some(conn) = store.get(tenant_id) {
-        return Ok(Some(conn));
+        // 使用 ping() 异步探活
+        match conn.ping().await {
+            Ok(()) => return Ok(Some(conn)),
+            Err(e) => {
+                tracing::warn!(
+                    "DATABASE-FAILOVER: tenant {:?} connection ping failed ({}), trying fallback chain",
+                    tenant_id, e
+                );
+                return Ok(get_available_default_database_async().await);
+            }
+        }
     }
 
     let provider = get_tenant_database_provider();
     if let Some(provider) = provider {
         let databases = provider.provide();
         if let Some(opts) = databases.get(tenant_id) {
-            let conn = connect_and_cache(&store, tenant_id, opts).await?;
-            return Ok(Some(conn));
+            match connect_and_cache(&store, tenant_id, opts).await {
+                Ok(conn) => return Ok(Some(conn)),
+                Err(e) => {
+                    tracing::warn!(
+                        "DATABASE-FAILOVER: failed to connect for tenant {:?}: {}, trying fallback chain",
+                        tenant_id, e
+                    );
+                    return Ok(get_available_default_database_async().await);
+                }
+            }
         }
     }
 
-    Err(DbErr::Custom(format!(
-        "DATABASE-ISOLATION: no database connection found for tenant {:?}, \
-         and no TenantDatabaseProvider can provide one",
+    // provider 也无法提供，尝试 fallback 链
+    tracing::warn!(
+        "DATABASE-FAILOVER: no provider can provide connection for tenant {:?}, trying fallback chain",
         tenant_id
-    )))
+    );
+    Ok(get_available_default_database_async().await)
 }
 
 #[cfg(feature = "runtime-tokio")]
@@ -695,7 +846,3 @@ pub trait TenantEntityExt: TenantEntity {
 }
 
 impl<E> TenantEntityExt for E where E: TenantEntity {}
-
-pub trait TenantActiveModelExt: sea_orm::ActiveModelTrait {
-    fn ensure_tenant_id(&mut self) where Self: Sized {}
-}

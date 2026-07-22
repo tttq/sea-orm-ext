@@ -101,11 +101,15 @@ async fn test_table_isolation_ignored_tables() {
     {
         let _guard = TenantGuard::set(Value::String(Some("99".to_string())));
         let inserted = new_product("Ignored Table Product", None).insert(&db).await.unwrap();
-        assert_eq!(inserted.tenant_id, Some("99".to_string()));
+        assert_eq!(inserted.tenant_id, None, "ignored_tables should skip tenant injection on insert");
     }
 
     let all = Product::find_with_deleted().all(&db).await.unwrap();
     assert_eq!(all.len(), 1);
+    assert_eq!(all[0].tenant_id, None, "ignored_tables should not inject tenant_id");
+
+    let find_result = Product::find().all(&db).await.unwrap();
+    assert_eq!(find_result.len(), 1, "ignored_tables should not filter on find()");
 }
 
 #[tokio::test]

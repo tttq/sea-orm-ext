@@ -22,8 +22,9 @@
 //! - **SoftDeleteTrait 实现**：为 `Entity` 实现自定义的 `SoftDeleteTrait`。
 //! - **TenantEntity 实现**：为 `Entity` 实现自定义的 `TenantEntity`，
 //!   返回租户列信息。
-//! - **查询辅助方法**：在 `Entity` 上生成 `find_active()`(带软删除过滤)
-//!   和 `find_with_tenant()`(带租户过滤) 两个便捷查询方法。
+//! - **查询辅助方法**：在 `Entity` 上生成 `find_active()`(带软删除过滤,
+//!   已 deprecated，建议直接使用 `find()`)等便捷查询方法。
+//!   `find()` 本身已自动叠加软删除与租户过滤。
 //! - **批量操作方法**：在 `Entity` 上生成 `insert_many_with_fill`、
 //!   `update_many_with_fill`、`delete_many_soft` 等批量操作辅助方法。
 
@@ -113,9 +114,11 @@ enum DeriveKind {
 
 /// `DeriveAutoFill` 派生宏入口
 ///
-/// 为标记了 `#[sea_orm_ext(insert)]` / `#[sea_orm_ext(update)]` /
-/// `#[sea_orm_ext(insert_update)]` 的字段在对应时机调用全局填充处理器。
-#[proc_macro_derive(DeriveAutoFill, attributes(sea_orm_ext, sea_orm))]
+/// 为标记了 `#[summer_sea_orm_ext(insert)]` / `#[summer_sea_orm_ext(update)]` /
+/// `#[summer_sea_orm_ext(insert_update)]` 的字段在对应时机调用全局填充处理器。
+///
+/// 也兼容旧的 `#[sea_orm_ext(...)]` 属性名。
+#[proc_macro_derive(DeriveAutoFill, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm))]
 pub fn derive_auto_fill(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFill, &input).into()
@@ -125,7 +128,7 @@ pub fn derive_auto_fill(input: proc_macro::TokenStream) -> proc_macro::TokenStre
 ///
 /// 为标记了 `#[soft_delete(default = 0, del = 1)]` 的字段生成软删除逻辑：
 /// `before_delete` 中标记该字段为删除值并返回错误以阻止实际删除。
-#[proc_macro_derive(DeriveSoftDelete, attributes(sea_orm_ext, sea_orm, soft_delete))]
+#[proc_macro_derive(DeriveSoftDelete, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm, soft_delete))]
 pub fn derive_soft_delete(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::SoftDelete, &input).into()
@@ -134,7 +137,7 @@ pub fn derive_soft_delete(input: proc_macro::TokenStream) -> proc_macro::TokenSt
 /// `DeriveAutoFillSoftDelete` 派生宏入口
 ///
 /// 同时启用自动填充和软删除功能。
-#[proc_macro_derive(DeriveAutoFillSoftDelete, attributes(sea_orm_ext, sea_orm, soft_delete))]
+#[proc_macro_derive(DeriveAutoFillSoftDelete, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm, soft_delete))]
 pub fn derive_auto_fill_soft_delete(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillSoftDelete, &input).into()
@@ -142,9 +145,11 @@ pub fn derive_auto_fill_soft_delete(input: proc_macro::TokenStream) -> proc_macr
 
 /// `DeriveTenant` 派生宏入口
 ///
-/// 为标记了 `#[sea_orm_ext(TENANT)]` 的字段生成多租户注入逻辑：
+/// 为标记了 `#[summer_sea_orm_ext(TENANT)]` 的字段生成多租户注入逻辑：
 /// 在 `before_save` 中自动将当前租户 ID 写入该字段。
-#[proc_macro_derive(DeriveTenant, attributes(sea_orm_ext, sea_orm))]
+///
+/// 也兼容旧的 `#[sea_orm_ext(TENANT)]` 属性名。
+#[proc_macro_derive(DeriveTenant, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm))]
 pub fn derive_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::Tenant, &input).into()
@@ -154,7 +159,7 @@ pub fn derive_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
 ///
 /// 同时启用自动填充和多租户功能（不含软删除）。
 /// 适用于需要自动 ID 生成、字段填充和租户隔离，但不需要软删除的实体。
-#[proc_macro_derive(DeriveAutoFillTenant, attributes(sea_orm_ext, sea_orm))]
+#[proc_macro_derive(DeriveAutoFillTenant, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm))]
 pub fn derive_auto_fill_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillTenant, &input).into()
@@ -163,7 +168,7 @@ pub fn derive_auto_fill_tenant(input: proc_macro::TokenStream) -> proc_macro::To
 /// `DeriveAutoFillSoftDeleteTenant` 派生宏入口
 ///
 /// 同时启用自动填充、软删除和多租户功能(全功能组合)。
-#[proc_macro_derive(DeriveAutoFillSoftDeleteTenant, attributes(sea_orm_ext, sea_orm, soft_delete))]
+#[proc_macro_derive(DeriveAutoFillSoftDeleteTenant, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm, soft_delete))]
 pub fn derive_auto_fill_soft_delete_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillSoftDeleteTenant, &input).into()
@@ -224,7 +229,7 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
             Ok(None) => {
                 return syn::Error::new_spanned(
                     &input.ident,
-                    "DeriveTenant requires a field annotated with #[sea_orm_ext(TENANT)]",
+                    "DeriveTenant requires a field annotated with #[summer_sea_orm_ext(TENANT)] or #[sea_orm_ext(TENANT)]",
                 )
                     .to_compile_error();
             }
@@ -232,6 +237,12 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
         }
     } else {
         None
+    };
+
+    // 解析所有可更新普通字段(用于批量 UPDATE 的 CASE WHEN 表达式)
+    let simple_fields = match parse_all_simple_fields(&input.data) {
+        Ok(s) => s,
+        Err(e) => return e.to_compile_error(),
     };
 
     // 生成各功能模块的 TokenStream
@@ -243,13 +254,12 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
         TokenStream::new()
     };
     let find_impl = expand_find_methods(&soft_delete, &tenant_field);
-    let batch_impls = expand_batch_entity_methods(&fill_fields, &primary_key, &soft_delete, &tenant_field);
+    let batch_impls = expand_batch_entity_methods(&fill_fields, &primary_key, &soft_delete, &tenant_field, &simple_fields);
     let tenant_impl = if let Some(t) = &tenant_field {
         expand_tenant_trait_impl(t)
     } else {
         TokenStream::new()
     };
-    let tenant_find_impl = TokenStream::new();
 
     // 组合所有生成的代码块
     quote! {
@@ -257,7 +267,6 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
         #soft_delete_impl
         #find_impl
         #tenant_impl
-        #tenant_find_impl
         #batch_impls
     }
 }
@@ -300,9 +309,12 @@ fn parse_fill_fields(data: &Data) -> syn::Result<Vec<FillFieldInfo>> {
         let mut is_ignored = false;
         let mut fill_mode = None;
 
-        // 解析 `sea_orm` 和 `sea_orm_ext` 属性中的标注
+        // 解析 `sea_orm`、`sea_orm_ext`、`summer_sea_orm_ext` 属性中的标注
         for attr in field.attrs.iter() {
-            if attr.path().is_ident("sea_orm") || attr.path().is_ident("sea_orm_ext") {
+            if attr.path().is_ident("sea_orm")
+                || attr.path().is_ident("sea_orm_ext")
+                || attr.path().is_ident("summer_sea_orm_ext")
+            {
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("ignore") {
                         is_ignored = true;
@@ -344,10 +356,101 @@ fn parse_fill_fields(data: &Data) -> syn::Result<Vec<FillFieldInfo>> {
     Ok(result)
 }
 
+/// 解析后的"普通字段"信息（非 fill、非主键、非软删除、非 tenant、非关联字段）
+///
+/// 这些字段是用户在 ActiveModel 上手动 `Set` 的字段，
+/// 批量 UPDATE 时需要为它们生成 CASE WHEN 表达式。
+#[allow(dead_code)]
+struct SimpleFieldInfo {
+    /// 字段标识符(如 `name`)
+    field_ident: Ident,
+    /// 对应的列枚举变体名(大驼峰，如 `Name`)
+    column_ident: Ident,
+    /// 字段类型(去除 Option 后的内部类型)
+    field_type: Type,
+    /// 原始字段是否为 Option 类型
+    is_option: bool,
+}
+
+/// 解析所有"普通字段"（可被用户手动 Set 的字段）
+///
+/// 收集所有非关联、非 ignored 的字段，包括：
+/// - 普通业务字段（如 name, price）
+/// - fill 字段（虽然批量更新时统一处理，但 CASE WHEN 也可能涉及）
+/// - 主键字段（虽然通常不会更新主键，但为完整性也收集）
+///
+/// 调用方需根据 fill_fields / primary_key / soft_delete / tenant_field 自行过滤。
+fn parse_all_simple_fields(data: &Data) -> syn::Result<Vec<SimpleFieldInfo>> {
+    let fields = match data {
+        Data::Struct(DataStruct {
+                         fields: Fields::Named(named),
+                         ..
+                     }) => &named.named,
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut result = Vec::new();
+
+    for field in fields {
+        let Some(ident) = &field.ident else {
+            continue;
+        };
+
+        let field_type = &field.ty;
+        let field_type_str: String = quote! { #field_type }
+            .to_string()
+            .split_whitespace()
+            .collect();
+
+        if is_compound_field(&field_type_str) {
+            continue;
+        }
+
+        // 检查是否被 ignore
+        let mut is_ignored = false;
+        for attr in field.attrs.iter() {
+            if attr.path().is_ident("sea_orm")
+                || attr.path().is_ident("sea_orm_ext")
+                || attr.path().is_ident("summer_sea_orm_ext")
+            {
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("ignore") {
+                        is_ignored = true;
+                    } else {
+                        let _: Option<Expr> = meta.value().and_then(|v| v.parse()).ok();
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+        if is_ignored {
+            continue;
+        }
+
+        let (inner_type, is_option) = extract_inner_type_and_option(&field_type_str);
+        let ty: Type = syn::LitStr::new(inner_type, field.span())
+            .parse()
+            .map_err(|_| syn::Error::new_spanned(ident, "Failed to parse field type"))?;
+        let column_ident = format_ident!(
+            "{}",
+            ident.to_string().to_upper_camel_case()
+        );
+
+        result.push(SimpleFieldInfo {
+            field_ident: ident.clone(),
+            column_ident,
+            field_type: ty,
+            is_option,
+        });
+    }
+
+    Ok(result)
+}
+
 /// 解析主键字段
 ///
 /// 查找同时标注了 `#[sea_orm(primary)]` 和 `#[sea_orm(auto_generate)]` 的字段，
-/// 该字段将在 insert 时通过 `sea_orm_ext::get_id_generator()` 自动生成 ID。
+/// 该字段将在 insert 时通过 `summer_sea_orm_ext::get_id_generator()` 自动生成 ID。
 fn parse_primary_key(data: &Data) -> syn::Result<Option<PrimaryKeyInfo>> {
     let fields = match data {
         Data::Struct(DataStruct {
@@ -496,7 +599,7 @@ fn parse_tenant_field(data: &Data) -> syn::Result<Option<TenantFieldInfo>> {
         };
 
         for attr in field.attrs.iter() {
-            if attr.path().is_ident("sea_orm_ext") {
+            if attr.path().is_ident("sea_orm_ext") || attr.path().is_ident("summer_sea_orm_ext") {
                 let mut is_tenant = false;
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("TENANT") {
@@ -659,7 +762,7 @@ fn expand_before_save_body(
         };
         statements.push(quote! {
             if insert && am.#field_ident.is_not_set() {
-                if let Some(gen) = sea_orm_ext::get_id_generator() {
+                if let Some(gen) = ::summer_sea_orm_ext::get_id_generator() {
                     let entity_name = <Entity as sea_orm::EntityName>::table_name(&Entity::default());
                     let val = if let Some(typed_val) = gen.generate_for_type(entity_name, stringify!(#field_ident), #field_type_str) {
                         typed_val
@@ -692,11 +795,11 @@ fn expand_before_save_body(
 
             // 调用全局 FieldFillHandler 获取填充值
             let fill_code = quote! {
-                if let Some(handler) = sea_orm_ext::get_field_fill_handler() {
+                if let Some(handler) = ::summer_sea_orm_ext::get_field_fill_handler() {
                     let op = if insert {
-                        sea_orm_ext::FieldFillOperation::Insert
+                        ::summer_sea_orm_ext::FieldFillOperation::Insert
                     } else {
-                        sea_orm_ext::FieldFillOperation::Update
+                        ::summer_sea_orm_ext::FieldFillOperation::Update
                     };
                     if let Some(val) = handler.fill(
                         <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
@@ -750,8 +853,11 @@ fn expand_before_save_body(
             quote! { sea_orm::Set(v) }
         };
         statements.push(quote! {
-            if sea_orm_ext::is_tenant_enforced() && am.#field_ident.is_not_set() {
-                let tenant_id = sea_orm_ext::try_get_tenant_id()?;
+            if ::summer_sea_orm_ext::is_tenant_enforced()
+                && am.#field_ident.is_not_set()
+                && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+            {
+                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
                 let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(tenant_id)
                     .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
                 am.#field_ident = #set_code;
@@ -800,7 +906,7 @@ fn expand_soft_delete_trait_impl(sd: &SoftDeleteFieldInfo) -> TokenStream {
 
     quote! {
         #[automatically_derived]
-        impl sea_orm_ext::SoftDeleteTrait for Entity {
+        impl ::summer_sea_orm_ext::SoftDeleteTrait for Entity {
             fn soft_delete_default() -> sea_query::Value {
                 (#default_value as #field_type).into()
             }
@@ -863,21 +969,14 @@ fn expand_find_methods(
         let column_ident = &t.column_ident;
 
         let tenant_filter = quote! {
-            if sea_orm_ext::is_tenant_enforced() && !sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
-                let tenant_id = sea_orm_ext::require_tenant_id();
+            if ::summer_sea_orm_ext::is_tenant_enforced() && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
+                let tenant_id = ::summer_sea_orm_ext::require_tenant_id();
                 select = select.filter(Column::#column_ident.eq(tenant_id));
             }
         };
         find_filters.push(tenant_filter.clone());
         find_by_id_filters.push(tenant_filter.clone());
         tenant_filter_code.push(tenant_filter);
-
-        method_decls.push(quote! {
-            #[deprecated(note = "use `Entity::find()` instead, which now auto-filters tenant records")]
-            pub fn find_with_tenant() -> sea_orm::Select<Entity> {
-                Self::find()
-            }
-        });
     }
 
     if has_sd && has_tenant {
@@ -969,7 +1068,7 @@ fn expand_tenant_trait_impl(t: &TenantFieldInfo) -> TokenStream {
 
     quote! {
         #[automatically_derived]
-        impl sea_orm_ext::TenantEntity for Entity {
+        impl ::summer_sea_orm_ext::TenantEntity for Entity {
             type TenantColumn = Column;
             fn tenant_column() -> Self::TenantColumn {
                 Column::#column_ident
@@ -986,9 +1085,10 @@ fn expand_batch_entity_methods(
     primary_key: &Option<PrimaryKeyInfo>,
     soft_delete: &Option<SoftDeleteFieldInfo>,
     tenant_field: &Option<TenantFieldInfo>,
+    simple_fields: &[SimpleFieldInfo],
 ) -> TokenStream {
     let batch_insert = expand_batch_insert_method(fill_fields, primary_key, tenant_field);
-    let batch_update = expand_batch_update_method(fill_fields, tenant_field);
+    let batch_update = expand_batch_update_method(fill_fields, tenant_field, primary_key, simple_fields);
     let batch_delete = expand_batch_delete_method(soft_delete, tenant_field, primary_key);
 
     quote! {
@@ -1002,7 +1102,7 @@ fn expand_batch_entity_methods(
 ///
 /// 生成两个方法：
 /// - `insert_many_with_fill`：批量插入并返回 `Vec<Model>`
-/// - `insert_many_with_fill_returning`：批量插入并返回 `UpdateResult`
+/// - `insert_many_with_fill_exec`：批量插入并返回 `UpdateResult`（不返回 Model，适合无 RETURNING 支持的后端）
 /// 每个模型在插入前都会经过主键生成、字段填充和租户注入的处理。
 fn expand_batch_insert_method(
     fill_fields: &[FillFieldInfo],
@@ -1022,16 +1122,16 @@ fn expand_batch_insert_method(
         };
         quote! {
             if am.#field_ident.is_not_set() {
-                if let Some(gen) = sea_orm_ext::get_id_generator() {
+                if let Some(gen) = ::summer_sea_orm_ext::get_id_generator() {
                     let entity_name = <Entity as sea_orm::EntityName>::table_name(&Entity::default());
                     let val = if let Some(typed_val) = gen.generate_for_type(entity_name, stringify!(#field_ident), #field_type_str) {
                         typed_val
                     } else {
                         gen.generate()
                     };
-                    if let Ok(v) = <#field_type as sea_orm::sea_query::ValueType>::try_from(val) {
-                        am.#field_ident = #set_code;
-                    }
+                    let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(val)
+                        .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
+                    am.#field_ident = #set_code;
                 }
             }
         }
@@ -1045,7 +1145,7 @@ fn expand_batch_insert_method(
         .filter(|f| matches!(f.fill_mode, FillMode::Insert | FillMode::InsertUpdate))
         .collect();
 
-    // 插入时字段填充逻辑(使用 `if let Ok` 忽略转换错误，避免中断批量操作)
+    // 插入时字段填充逻辑
     let fill_block = if !fill_insert_fields.is_empty() {
         let fill_stmts: Vec<_> = fill_insert_fields
             .iter()
@@ -1060,15 +1160,15 @@ fn expand_batch_insert_method(
                     quote! { sea_orm::Set(v) }
                 };
                 quote! {
-                    if let Some(handler) = sea_orm_ext::get_field_fill_handler() {
+                    if let Some(handler) = ::summer_sea_orm_ext::get_field_fill_handler() {
                         if let Some(val) = handler.fill(
                             <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
                             #field_name,
-                            sea_orm_ext::FieldFillOperation::Insert,
+                            ::summer_sea_orm_ext::FieldFillOperation::Insert,
                         ) {
-                            if let Ok(v) = <#field_type as sea_orm::sea_query::ValueType>::try_from(val) {
-                                am.#field_ident = #set_code;
-                            }
+                            let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(val)
+                                .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
+                            am.#field_ident = #set_code;
                         }
                     }
                 }
@@ -1090,8 +1190,11 @@ fn expand_batch_insert_method(
             quote! { sea_orm::Set(v) }
         };
         quote! {
-            if sea_orm_ext::is_tenant_enforced() && am.#field_ident.is_not_set() {
-                let tenant_id = sea_orm_ext::try_get_tenant_id()?;
+            if ::summer_sea_orm_ext::is_tenant_enforced()
+                && am.#field_ident.is_not_set()
+                && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+            {
+                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
                 let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(tenant_id)
                     .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
                 am.#field_ident = #set_code;
@@ -1104,6 +1207,9 @@ fn expand_batch_insert_method(
     quote! {
         #[automatically_derived]
         impl Entity {
+            /// 批量插入（自动填充主键、字段、租户 ID），返回插入后的 Model 列表。
+            ///
+            /// 适用于支持 RETURNING 子句的后端（PostgreSQL、SQLite 3.35+）。
             pub async fn insert_many_with_fill<C>(
                 models: Vec<ActiveModel>,
                 db: &C,
@@ -1114,6 +1220,9 @@ fn expand_batch_insert_method(
                 if models.is_empty() {
                     return Ok(Vec::new());
                 }
+                // 循环外一次性获取 fill handler 和 id generator 的 Arc，避免循环中被替换
+                let _fill_handler = ::summer_sea_orm_ext::get_field_fill_handler();
+                let _id_generator = ::summer_sea_orm_ext::get_id_generator();
                 let mut processed = Vec::with_capacity(models.len());
                 for mut am in models {
                     #id_gen_block
@@ -1124,7 +1233,8 @@ fn expand_batch_insert_method(
                 Entity::insert_many(processed).exec_with_returning(db).await
             }
 
-            pub async fn insert_many_with_fill_returning<C>(
+            /// 批量插入（不返回 Model，适合无 RETURNING 支持的后端）
+            pub async fn insert_many_with_fill_exec<C>(
                 models: Vec<ActiveModel>,
                 db: &C,
             ) -> Result<sea_orm::UpdateResult, sea_orm::DbErr>
@@ -1132,8 +1242,10 @@ fn expand_batch_insert_method(
                 C: sea_orm::ConnectionTrait,
             {
                 if models.is_empty() {
-                    return Ok(sea_orm::UpdateResult { rows_affected: 0 });
+                    return Ok(sea_orm::UpdateResult::default());
                 }
+                let _fill_handler = ::summer_sea_orm_ext::get_field_fill_handler();
+                let _id_generator = ::summer_sea_orm_ext::get_id_generator();
                 let mut processed = Vec::with_capacity(models.len());
                 for mut am in models {
                     #id_gen_block
@@ -1141,9 +1253,62 @@ fn expand_batch_insert_method(
                     #tenant_block
                     processed.push(am);
                 }
-                let count = processed.len() as u64;
-                Entity::insert_many(processed).exec_without_returning(db).await?;
-                Ok(sea_orm::UpdateResult { rows_affected: count })
+                let rows = Entity::insert_many(processed).exec_without_returning(db).await?;
+                let mut result = sea_orm::UpdateResult::default();
+                result.rows_affected = rows;
+                Ok(result)
+            }
+
+            /// 批量插入（幂等版本，支持 ON CONFLICT 处理）
+            ///
+            /// 当主键或唯一键冲突时，按 `on_conflict` 策略处理：
+            /// - `OnConflict::new().do_nothing()` → 冲突时跳过
+            /// - `OnConflict::new().update_column(...)` → 冲突时更新指定列
+            ///
+            /// # 用法
+            ///
+            /// ```ignore
+            /// use sea_query::OnConflict;
+            ///
+            /// // 冲突时跳过
+            /// Entity::insert_many_with_fill_on_conflict(
+            ///     models, OnConflict::column(Column::Id).do_nothing().to_owned(), &db
+            /// ).await?;
+            ///
+            /// // 冲突时更新
+            /// Entity::insert_many_with_fill_on_conflict(
+            ///     models,
+            ///     OnConflict::column(Column::Id)
+            ///         .update_column(Column::Name)
+            ///         .to_owned(),
+            ///     &db
+            /// ).await?;
+            /// ```
+            pub async fn insert_many_with_fill_on_conflict<C>(
+                models: Vec<ActiveModel>,
+                on_conflict: sea_query::OnConflict,
+                db: &C,
+            ) -> Result<sea_orm::UpdateResult, sea_orm::DbErr>
+            where
+                C: sea_orm::ConnectionTrait,
+            {
+                if models.is_empty() {
+                    return Ok(sea_orm::UpdateResult::default());
+                }
+                let _fill_handler = ::summer_sea_orm_ext::get_field_fill_handler();
+                let _id_generator = ::summer_sea_orm_ext::get_id_generator();
+                let mut processed = Vec::with_capacity(models.len());
+                for mut am in models {
+                    #id_gen_block
+                    #fill_block
+                    #tenant_block
+                    processed.push(am);
+                }
+                let stmt = Entity::insert_many(processed).on_conflict(on_conflict);
+                let rows = stmt.exec_without_returning(db).await?;
+                let mut result = sea_orm::UpdateResult::default();
+                result.rows_affected = rows;
+                Ok(result)
             }
         }
     }
@@ -1152,66 +1317,148 @@ fn expand_batch_insert_method(
 /// 生成批量 update 方法
 ///
 /// 生成两个方法：
-/// - `update_many_with_fill`：批量更新并返回 `UpdateResult`
-/// - `update_many_with_fill_returning`：批量更新并返回 `Vec<Model>`
-/// 仅处理 Update 和 InsertUpdate 模式的字段填充。
-fn expand_batch_update_method(fill_fields: &[FillFieldInfo], tenant_field: &Option<TenantFieldInfo>) -> TokenStream {
-    // 过滤出需要在 Update 时机填充的字段
-    let fill_update_fields: Vec<_> = fill_fields
+/// - `update_many_with_fill`：使用 `CASE WHEN ... THEN ... END` 构造单条 SQL
+///   批量 UPDATE，返回 `UpdateResult`。所有模型字段集可不同，对未设置的字段
+///   保持原值（`ELSE col`）。update 模式的 fill 字段对所有行用同一个值
+///   （在循环外调用 fill handler 一次），直接 `SET col = value`。
+/// - `update_many_with_fill_returning`：执行上述 UPDATE 后，用 `SELECT ... WHERE id IN (...)`
+///   一次性取回所有更新后的 Model，共 2 次 DB 调用。
+///
+/// 不再使用 for 循环逐条 update。
+fn expand_batch_update_method(
+    fill_fields: &[FillFieldInfo],
+    tenant_field: &Option<TenantFieldInfo>,
+    primary_key: &Option<PrimaryKeyInfo>,
+    simple_fields: &[SimpleFieldInfo],
+) -> TokenStream {
+    // 必须有主键才能批量更新（用于 WHERE id IN (...) 过滤）
+    let Some(pk) = primary_key else {
+        return TokenStream::new();
+    };
+
+    let pk_field = &pk.field_ident;
+    let pk_type = &pk.field_type;
+    let pk_is_option = pk.is_option;
+    let pk_column_name = pk.field_ident.to_string().to_upper_camel_case();
+    let pk_column_ident = format_ident!("{}", pk_column_name);
+
+    // 主键值提取表达式（兼容 Option<T> 主键）
+    let pk_extract_expr = if pk_is_option {
+        quote! {
+            match &am.#pk_field {
+                sea_orm::ActiveValue::Set(Some(v)) | sea_orm::ActiveValue::Unchanged(Some(v)) => Some(v.clone()),
+                _ => None,
+            }
+        }
+    } else {
+        quote! {
+            match &am.#pk_field {
+                sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => Some(v.clone()),
+                _ => None,
+            }
+        }
+    };
+
+    // update 模式 fill 字段处理：在循环外调用 fill handler 一次，对所有行用同一个值
+    // 直接 SET col = value（不需要 CASE WHEN）
+    let update_fill_fields: Vec<_> = fill_fields
         .iter()
         .filter(|f| matches!(f.fill_mode, FillMode::Update | FillMode::InsertUpdate))
         .collect();
 
-    // 更新时字段填充逻辑
-    let fill_block = if !fill_update_fields.is_empty() {
-        let fill_stmts: Vec<_> = fill_update_fields
-            .iter()
-            .map(|f| {
-                let field_ident = &f.field_ident;
-                let field_type = &f.field_type;
-                let field_name = field_ident.to_string();
-                let is_option = f.is_option;
-                let set_code = if is_option {
-                    quote! { sea_orm::Set(Some(v)) }
-                } else {
-                    quote! { sea_orm::Set(v) }
-                };
-                quote! {
-                    if let Some(handler) = sea_orm_ext::get_field_fill_handler() {
-                        if let Some(val) = handler.fill(
-                            <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
-                            #field_name,
-                            sea_orm_ext::FieldFillOperation::Update,
-                        ) {
-                            if let Ok(v) = <#field_type as sea_orm::sea_query::ValueType>::try_from(val) {
-                                am.#field_ident = #set_code;
-                            }
-                        }
+    let update_fill_set_block: TokenStream = if update_fill_fields.is_empty() {
+        TokenStream::new()
+    } else {
+        let mut stmts: Vec<TokenStream> = Vec::new();
+        for f in update_fill_fields {
+            let field_ident = &f.field_ident;
+            let column_name = f.field_ident.to_string().to_upper_camel_case();
+            let column_ident = format_ident!("{}", column_name);
+            let field_name = field_ident.to_string();
+            stmts.push(quote! {
+                if let Some(handler) = ::summer_sea_orm_ext::get_field_fill_handler() {
+                    if let Some(val) = handler.fill(
+                        <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
+                        #field_name,
+                        ::summer_sea_orm_ext::FieldFillOperation::Update,
+                    ) {
+                        query = query.col_expr(Column::#column_ident, sea_query::Expr::Value(val));
                     }
                 }
-            })
-            .collect();
-        quote! { #(#fill_stmts)* }
-    } else {
-        TokenStream::new()
+            });
+        }
+        quote! { #(#stmts)* }
     };
 
-    // 租户 ID 注入逻辑(更新时同样检查)
-    let tenant_block = if let Some(t) = tenant_field {
-        let field_ident = &t.field_ident;
-        let field_type = &t.field_type;
-        let is_option = t.is_option;
-        let set_code = if is_option {
-            quote! { sea_orm::Set(Some(v)) }
-        } else {
-            quote! { sea_orm::Set(v) }
-        };
+    // 过滤出需要生成 CASE WHEN 的普通字段：
+    // 排除主键、tenant、fill 字段（fill 字段已在上面单独处理）
+    // simple_fields 已排除软删除字段（因为软删除字段通常标注了 soft_delete 但未在 simple_fields 中排除，
+    // 但软删除字段不应该被用户手动 Set，所以即使生成 CASE WHEN 也不会触发）
+    let case_when_fields: Vec<&SimpleFieldInfo> = simple_fields.iter().filter(|sf| {
+        // 排除主键
+        if sf.field_ident == pk.field_ident {
+            return false;
+        }
+        // 排除 tenant 字段
+        if let Some(t) = tenant_field {
+            if sf.field_ident == t.field_ident {
+                return false;
+            }
+        }
+        // 排除 fill 字段（已在 update_fill_set_block 处理）
+        if fill_fields.iter().any(|ff| ff.field_ident == sf.field_ident) {
+            return false;
+        }
+        true
+    }).collect();
+
+    // 为每个普通字段生成 CASE WHEN 代码块
+    // 运行时检查该字段在任意模型中是否被 Set，如果有则构造 CASE WHEN
+    let case_when_block: TokenStream = if case_when_fields.is_empty() {
+        TokenStream::new()
+    } else {
+        let mut stmts: Vec<TokenStream> = Vec::new();
+        for sf in case_when_fields {
+            let field_ident = &sf.field_ident;
+            let column_ident = &sf.column_ident;
+            stmts.push(quote! {
+                {
+                    let mut case_stmt = sea_query::CaseStatement::new();
+                    let mut has_case = false;
+                    for am in &models {
+                        match &am.#field_ident {
+                            sea_orm::ActiveValue::Set(v) => {
+                                let pk_val_opt: Option<#pk_type> = #pk_extract_expr;
+                                if let Some(pk_val) = pk_val_opt {
+                                    case_stmt = case_stmt.case(
+                                        Column::#pk_column_ident.eq(pk_val),
+                                        sea_query::Expr::Value(sea_query::Value::from(v.clone())),
+                                    );
+                                    has_case = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if has_case {
+                        case_stmt = case_stmt.finally(sea_query::Expr::col(Column::#column_ident));
+                        query = query.col_expr(Column::#column_ident, case_stmt.into());
+                    }
+                }
+            });
+        }
+        quote! { #(#stmts)* }
+    };
+
+    // tenant WHERE 过滤代码
+    let tenant_where_filter = if let Some(t) = tenant_field {
+        let t_column_ident = &t.column_ident;
         quote! {
-            if sea_orm_ext::is_tenant_enforced() && am.#field_ident.is_not_set() {
-                let tenant_id = sea_orm_ext::try_get_tenant_id()?;
-                let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(tenant_id)
-                    .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
-                am.#field_ident = #set_code;
+            if ::summer_sea_orm_ext::is_tenant_enforced()
+                && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+            {
+                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
+                query = query.filter(Column::#t_column_ident.eq(tenant_id));
             }
         }
     } else {
@@ -1221,6 +1468,13 @@ fn expand_batch_update_method(fill_fields: &[FillFieldInfo], tenant_field: &Opti
     quote! {
         #[automatically_derived]
         impl Entity {
+            /// 批量更新（单条 SQL，使用 CASE WHEN）
+            ///
+            /// - update 模式 fill 字段：在循环外调用 fill handler 一次，所有行用同一个值
+            /// - 用户设置的普通字段：对每个字段生成 `CASE WHEN id = ? THEN ? ... ELSE col END`
+            /// - WHERE id IN (...) [AND tenant_id = ?]
+            ///
+            /// 不再使用 for 循环逐条 update，所有更新合并为单条 SQL。
             pub async fn update_many_with_fill<C>(
                 models: Vec<ActiveModel>,
                 db: &C,
@@ -1228,31 +1482,83 @@ fn expand_batch_update_method(fill_fields: &[FillFieldInfo], tenant_field: &Opti
             where
                 C: sea_orm::ConnectionTrait,
             {
-                let mut total_rows = 0u64;
-                for mut am in models {
-                    #tenant_block
-                    #fill_block
-                    sea_orm::ActiveModelTrait::update(am, db).await?;
-                    total_rows += 1;
+                if models.is_empty() {
+                    return Ok(sea_orm::UpdateResult::default());
                 }
-                Ok(sea_orm::UpdateResult { rows_affected: total_rows })
+
+                // 提取主键值列表（用于 WHERE id IN (...)）
+                let pk_values: Vec<#pk_type> = models.iter().filter_map(|am| {
+                    #pk_extract_expr
+                }).collect();
+                if pk_values.is_empty() {
+                    return Err(sea_orm::DbErr::Custom(
+                        "update_many_with_fill: no usable primary key values found in input models".to_owned(),
+                    ));
+                }
+
+                let mut query = Entity::update_many();
+                // update 模式 fill 字段（对所有行相同值）
+                #update_fill_set_block
+                // 普通字段的 CASE WHEN 表达式
+                #case_when_block
+                // WHERE id IN (...) [AND tenant_id = ?]
+                query = query.filter(Column::#pk_column_ident.is_in(pk_values));
+                #tenant_where_filter
+
+                query.exec(db).await
             }
 
+            /// 批量更新并返回更新后的 Model（单事务内 UPDATE + SELECT）
+            ///
+            /// - 第 1 步：开启事务（隔离级别默认）
+            /// - 第 2 步：执行 `update_many_with_fill` 的批量 UPDATE（在事务内）
+            /// - 第 3 步：用 `Entity::find_by_id(...).all(db)` 一次性取回所有更新后的 Model（在事务内）
+            /// - 第 4 步：提交事务
+            ///
+            /// **重要**：UPDATE 和 SELECT 在同一事务中执行，保证读取的是本次 UPDATE 的结果，
+            /// 避免 non-repeatable read / phantom read。
             pub async fn update_many_with_fill_returning<C>(
                 models: Vec<ActiveModel>,
                 db: &C,
             ) -> Result<Vec<Model>, sea_orm::DbErr>
             where
-                C: sea_orm::ConnectionTrait,
+                C: sea_orm::ConnectionTrait + sea_orm::TransactionTrait,
             {
-                let mut results = Vec::with_capacity(models.len());
-                for mut am in models {
-                    #tenant_block
-                    #fill_block
-                    let model = sea_orm::ActiveModelTrait::update(am, db).await?;
-                    results.push(model);
+                if models.is_empty() {
+                    return Ok(Vec::new());
                 }
-                Ok(results)
+
+                // 提取主键值列表（用于后续 SELECT）
+                let pk_values: Vec<#pk_type> = models.iter().filter_map(|am| {
+                    #pk_extract_expr
+                }).collect();
+                if pk_values.is_empty() {
+                    return Err(sea_orm::DbErr::Custom(
+                        "update_many_with_fill_returning: no usable primary key values found in input models".to_owned(),
+                    ));
+                }
+
+                // 在事务中执行 UPDATE + SELECT，保证读一致性
+                db.transaction(|txn| {
+                    Box::pin(async move {
+                        // 第 1 步：批量 UPDATE（在事务内）
+                        let mut query = Entity::update_many();
+                        #update_fill_set_block
+                        #case_when_block
+                        query = query.filter(Column::#pk_column_ident.is_in(pk_values.clone()));
+                        #tenant_where_filter
+                        query.exec(txn).await?;
+
+                        // 第 2 步：批量 SELECT 取回更新后的 Model（在同一事务内）
+                        let results = Entity::find()
+                            .filter(Column::#pk_column_ident.is_in(pk_values))
+                            .all(txn).await?;
+                        Ok(results)
+                    })
+                }).await.map_err(|e| match e {
+                    sea_orm::TransactionError::Connection(db_err) => db_err,
+                    sea_orm::TransactionError::Transaction(db_err) => db_err,
+                })
             }
         }
     }
@@ -1273,8 +1579,8 @@ fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, tenant_
     let tenant_filter_code = if let Some(t) = tenant_field {
         let t_column_ident = &t.column_ident;
         quote! {
-            if sea_orm_ext::is_tenant_enforced() && !sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
-                let tenant_id = sea_orm_ext::require_tenant_id();
+            if ::summer_sea_orm_ext::is_tenant_enforced() && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
+                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
                 query = query.filter(Column::#t_column_ident.eq(tenant_id));
             }
         }
@@ -1285,24 +1591,43 @@ fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, tenant_
     let pk_extract_and_filter = if let Some(pk) = primary_key {
         let pk_field = &pk.field_ident;
         let pk_type = &pk.field_type;
+        let pk_is_option = pk.is_option;
         let pk_column_name = pk.field_ident.to_string().to_upper_camel_case();
         let pk_column_ident = format_ident!("{}", pk_column_name);
-        quote! {
-            let pk_values: Vec<#pk_type> = models.iter().filter_map(|am| {
+        // 当主键声明为 Option<T> 时，ActiveValue 内部值为 Option<T>，
+        // 需要先 flatten 取出 Some(v) 再收集到 Vec<T> 中。
+        let extract_expr = if pk_is_option {
+            quote! {
+                match &am.#pk_field {
+                    sea_orm::ActiveValue::Set(Some(v)) | sea_orm::ActiveValue::Unchanged(Some(v)) => Some(v.clone()),
+                    _ => None,
+                }
+            }
+        } else {
+            quote! {
                 match &am.#pk_field {
                     sea_orm::ActiveValue::Set(v) | sea_orm::ActiveValue::Unchanged(v) => Some(v.clone()),
                     _ => None,
                 }
+            }
+        };
+        quote! {
+            let pk_values: Vec<#pk_type> = models.iter().filter_map(|am| {
+                #extract_expr
             }).collect();
             if pk_values.is_empty() {
-                return Ok(sea_orm::UpdateResult { rows_affected: 0 });
+                return Err(sea_orm::DbErr::Custom(
+                    "delete_many_soft: no usable primary key values found in input models".to_owned(),
+                ));
             }
             query = query.filter(Column::#pk_column_ident.is_in(pk_values));
         }
     } else {
         quote! {
             let _ = models;
-            return Ok(sea_orm::UpdateResult { rows_affected: 0 });
+            return Err(sea_orm::DbErr::Custom(
+                "delete_many_soft: entity has no auto-generated primary key; cannot build filter".to_owned(),
+            ));
         }
     };
 
@@ -1317,7 +1642,7 @@ fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, tenant_
                 C: sea_orm::ConnectionTrait,
             {
                 if models.is_empty() {
-                    return Ok(sea_orm::UpdateResult { rows_affected: 0 });
+                    return Ok(sea_orm::UpdateResult::default());
                 }
                 let mut query = Entity::update_many()
                     .col_expr(Column::#sd_column_ident, sea_query::Expr::value(#del_value as #sd_field_type));
