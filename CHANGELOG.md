@@ -47,6 +47,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **ID 生成器**：`DefaultIdGenerator`、`UuidIdGenerator`、`TypedIdGenerator`、`SnowflakeIdGenerator`
 - **`anyhow` 依赖**：与 summer-sea-orm 一致
 - **`DatabaseConfig` 新增字段**：`enable_logging`、`idle_timeout_secs`
+- **多租户 WHERE 自动注入覆盖**：为 `Entity::update_many()` 和 `Entity::delete_many()` 添加宏覆盖实现，开启字段隔离多租户（`TenantMode::Table`）时自动在 WHERE 条件中叠加 `tenant_id = ?`，防止跨租户更新/删除
+  - 新增 `Entity::update_many_without_tenant()` / `Entity::delete_many_without_tenant()` 方法用于跨租户运维场景
+  - 移除 `expand_batch_update_method` / `expand_batch_delete_method` 中冗余的 `tenant_where_filter`（由覆盖后的 `update_many()` 统一注入）
+  - 标记 `apply_tenant_condition` / `apply_tenant_delete_condition` 为 `#[deprecated]`
+  - 安全保障：租户上下文未设置时 `require_tenant_id()` 返回 `Value::Int(None)`（SQL NULL），`WHERE tenant_id = NULL` 永远为 false，保证安全失败
 
 ### Changed
 

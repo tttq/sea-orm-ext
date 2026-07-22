@@ -29,7 +29,6 @@ pub use summer_sea_orm_ext::{
     is_tenant_enabled, is_tenant_enforced, is_table_tenant_ignored,
     get_tenant_mode, try_get_tenant_id, require_tenant_id,
     set_tenant_context, TenantContext,
-    apply_tenant_condition, apply_tenant_delete_condition,
     get_tenant_config,
     get_id_generator, get_field_fill_handler,
 };
@@ -156,7 +155,7 @@ mod order_entity {
     pub enum Relation {}
 }
 
-pub use order_entity::{Entity as Order, ActiveModel as OrderActiveModel};
+pub use order_entity::{Entity as Order, ActiveModel as OrderActiveModel, Column as OrderColumn};
 
 pub struct TestIdGenerator {
     counter: AtomicI64,

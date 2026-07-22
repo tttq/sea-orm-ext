@@ -346,6 +346,11 @@ where
     }
 }
 
+/// 为 `UpdateStatement` 叠加租户 WHERE 条件（底层 sea_query 接口）
+///
+/// **已废弃**：请优先使用宏覆盖后的 `Entity::update_many()`，它会自动注入租户 WHERE。
+/// 仅在需要直接操作 `sea_query::UpdateStatement` 的特殊场景下使用此函数。
+#[deprecated(since = "0.0.1", note = "use `Entity::update_many()` which now auto-injects tenant WHERE")]
 pub fn apply_tenant_condition<E>(mut stmt: UpdateStatement) -> UpdateStatement
 where
     E: TenantEntity,
@@ -361,6 +366,11 @@ where
     stmt
 }
 
+/// 为 `DeleteStatement` 叠加租户 WHERE 条件（底层 sea_query 接口）
+///
+/// **已废弃**：请优先使用宏覆盖后的 `Entity::delete_many()`，它会自动注入租户 WHERE。
+/// 仅在需要直接操作 `sea_query::DeleteStatement` 的特殊场景下使用此函数。
+#[deprecated(since = "0.0.1", note = "use `Entity::delete_many()` which now auto-injects tenant WHERE")]
 pub fn apply_tenant_delete_condition<E>(mut stmt: DeleteStatement) -> DeleteStatement
 where
     E: TenantEntity,

@@ -909,3 +909,273 @@ fn test_tenant_database_provider_provide() {
     assert!(provided.contains_key(&Value::String(Some("1".to_string()))));
     assert!(provided.contains_key(&Value::String(Some("2".to_string()))));
 }
+
+// ===========================================================================
+// update_many() / delete_many() 自动租户 WHERE 条件测试
+// ===========================================================================
+//
+// 验证宏覆盖后的 Entity::update_many() 和 Entity::delete_many() 在开启字段隔离
+// 多租户 (TenantMode::Table) 时，自动在 WHERE 条件中叠加 tenant_id = ?，
+// 防止跨租户更新/删除。
+//
+// 同时验证 update_many_without_tenant() / delete_many_without_tenant()
+// 绕过租户过滤的能力（用于运维场景）。
+
+#[tokio::test]
+#[serial]
+async fn test_update_many_auto_injects_tenant_where() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("upd_many_tenant")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_order_table(&db).await;
+
+    // 租户 1 插入 2 条，租户 2 插入 2 条
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_order("T1-A", 1).insert(&db).await.unwrap();
+        new_order("T1-B", 2).insert(&db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_order("T2-A", 3).insert(&db).await.unwrap();
+        new_order("T2-B", 4).insert(&db).await.unwrap();
+    }
+
+    // 以租户 1 身份执行 update_many()，将所有订单数量改为 99
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let result = Order::update_many()
+            .col_expr(OrderColumn::Quantity, sea_query::Expr::value(99))
+            .exec(&db)
+            .await
+            .unwrap();
+        // 只应更新租户 1 的 2 条记录
+        assert_eq!(result.rows_affected, 2, "update_many() should only affect tenant 1's records");
+    }
+
+    // 验证租户 1 的记录全部被更新
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let results = Order::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.quantity, 99, "tenant 1 records should be updated");
+        }
+    }
+
+    // 验证租户 2 的记录未被更新
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        let results = Order::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 2);
+        // 租户 2 的 quantity 应保持原值 (3, 4)
+        let quantities: Vec<i32> = results.iter().map(|r| r.quantity).collect();
+        assert!(quantities.contains(&3), "tenant 2 records should NOT be updated");
+        assert!(quantities.contains(&4), "tenant 2 records should NOT be updated");
+        assert!(!quantities.contains(&99), "tenant 2 records should NOT have quantity 99");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_delete_many_auto_injects_tenant_where() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("del_many_tenant")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_order_table(&db).await;
+
+    // 租户 1 插入 2 条，租户 2 插入 2 条
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_order("T1-A", 1).insert(&db).await.unwrap();
+        new_order("T1-B", 2).insert(&db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_order("T2-A", 3).insert(&db).await.unwrap();
+        new_order("T2-B", 4).insert(&db).await.unwrap();
+    }
+
+    // 以租户 1 身份执行 delete_many()，删除所有订单
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let result = Order::delete_many().exec(&db).await.unwrap();
+        // 只应删除租户 1 的 2 条记录
+        assert_eq!(result.rows_affected, 2, "delete_many() should only affect tenant 1's records");
+    }
+
+    // 验证租户 1 的记录已全部删除
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let results = Order::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 0, "tenant 1 records should be deleted");
+    }
+
+    // 验证租户 2 的记录未被删除
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        let results = Order::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 2, "tenant 2 records should NOT be deleted");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_update_many_without_tenant_bypasses_filter() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("upd_no_tenant")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_order_table(&db).await;
+
+    // 租户 1 和租户 2 各插入 2 条
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_order("T1-A", 1).insert(&db).await.unwrap();
+        new_order("T1-B", 2).insert(&db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_order("T2-A", 3).insert(&db).await.unwrap();
+        new_order("T2-B", 4).insert(&db).await.unwrap();
+    }
+
+    // 使用 update_many_without_tenant() 绕过租户过滤，更新所有记录
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let result = Order::update_many_without_tenant()
+            .col_expr(OrderColumn::Quantity, sea_query::Expr::value(0))
+            .exec(&db)
+            .await
+            .unwrap();
+        // 应更新所有 4 条记录（跨租户）
+        assert_eq!(result.rows_affected, 4, "update_many_without_tenant() should affect ALL records across tenants");
+    }
+
+    // 验证所有租户的记录都被更新
+    let all = Order::find_without_tenant().all(&db).await.unwrap();
+    assert_eq!(all.len(), 4);
+    for r in &all {
+        assert_eq!(r.quantity, 0, "all records should be updated (cross-tenant)");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_delete_many_without_tenant_bypasses_filter() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("del_no_tenant")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_order_table(&db).await;
+
+    // 租户 1 和租户 2 各插入 2 条
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_order("T1-A", 1).insert(&db).await.unwrap();
+        new_order("T1-B", 2).insert(&db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_order("T2-A", 3).insert(&db).await.unwrap();
+        new_order("T2-B", 4).insert(&db).await.unwrap();
+    }
+
+    // 使用 delete_many_without_tenant() 绕过租户过滤，删除所有记录
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let result = Order::delete_many_without_tenant().exec(&db).await.unwrap();
+        // 应删除所有 4 条记录（跨租户）
+        assert_eq!(result.rows_affected, 4, "delete_many_without_tenant() should delete ALL records across tenants");
+    }
+
+    // 验证所有记录都被删除
+    let all = Order::find_without_tenant().all(&db).await.unwrap();
+    assert_eq!(all.len(), 0, "all records should be deleted (cross-tenant)");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_update_many_tenant_not_set_safe_fail() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("safe_fail")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None, // 无默认租户
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_order_table(&db).await;
+
+    // 插入 2 条记录（绕过租户过滤直接插入）
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_order("T1-A", 1).insert(&db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_order("T2-A", 2).insert(&db).await.unwrap();
+    }
+
+    // 不设置租户上下文，直接执行 update_many()
+    // require_tenant_id() 返回 Value::Int(None)（SQL NULL）
+    // WHERE tenant_id = NULL 永远为 false，安全失败：不更新任何记录
+    let result = Order::update_many()
+        .col_expr(OrderColumn::Quantity, sea_query::Expr::value(99))
+        .exec(&db)
+        .await
+        .unwrap();
+    assert_eq!(result.rows_affected, 0, "update_many() with no tenant context should affect 0 rows (safe fail)");
+
+    // 验证记录未被修改
+    let all = Order::find_without_tenant().all(&db).await.unwrap();
+    assert_eq!(all.len(), 2, "records should be untouched");
+}

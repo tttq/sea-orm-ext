@@ -254,6 +254,7 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
         TokenStream::new()
     };
     let find_impl = expand_find_methods(&soft_delete, &tenant_field);
+    let update_delete_impl = expand_update_delete_methods(&tenant_field);
     let batch_impls = expand_batch_entity_methods(&fill_fields, &primary_key, &soft_delete, &tenant_field, &simple_fields);
     let tenant_impl = if let Some(t) = &tenant_field {
         expand_tenant_trait_impl(t)
@@ -266,6 +267,7 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
         #behavior_impl
         #soft_delete_impl
         #find_impl
+        #update_delete_impl
         #tenant_impl
         #batch_impls
     }
@@ -1060,6 +1062,80 @@ fn expand_find_methods(
     }
 }
 
+/// 生成 update_many / delete_many 覆盖方法（自动注入租户 WHERE 条件）
+///
+/// 当实体配置了租户字段时，覆盖 sea-orm 原生的 `Entity::update_many()` 和
+/// `Entity::delete_many()`，使其在返回的语句上自动叠加租户过滤条件。
+/// 这样用户直接调用 `Entity::update_many()` 或 `Entity::delete_many()` 时，
+/// 无需手动添加 `.filter(Column::TenantId.eq(...))` 即可保证只操作当前租户的数据。
+///
+/// 同时提供 `update_many_without_tenant()` / `delete_many_without_tenant()`
+/// 方法用于需要跨租户操作的特殊场景（如运维清理、数据迁移）。
+///
+/// **安全性**：覆盖后的 `update_many()` / `delete_many()` 在开启字段隔离多租户
+/// (`TenantMode::Table`) 且未禁用租户过滤时，自动叠加 `WHERE tenant_id = ?`。
+/// 若租户上下文未设置，`require_tenant_id()` 返回 `Value::Int(None)`（SQL NULL），
+/// `WHERE tenant_id = NULL` 永远为 false，保证安全失败（不会误操作其他租户数据）。
+fn expand_update_delete_methods(tenant_field: &Option<TenantFieldInfo>) -> TokenStream {
+    let Some(t) = tenant_field else {
+        return TokenStream::new();
+    };
+    let column_ident = &t.column_ident;
+
+    quote! {
+        #[automatically_derived]
+        impl Entity {
+            /// 批量更新（自动带租户 WHERE 条件）
+            ///
+            /// 覆盖 sea-orm 原生 `Entity::update_many()`，在开启字段隔离多租户时
+            /// 自动叠加 `WHERE tenant_id = ?` 条件，防止跨租户更新。
+            /// 需要跨租户更新时请使用 [`Entity::update_many_without_tenant()`]。
+            pub fn update_many() -> sea_orm::UpdateMany<Entity> {
+                let mut stmt = <Entity as sea_orm::EntityTrait>::update_many();
+                if ::summer_sea_orm_ext::is_tenant_enforced()
+                    && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+                {
+                    let tenant_id = ::summer_sea_orm_ext::require_tenant_id();
+                    stmt = stmt.filter(Column::#column_ident.eq(tenant_id));
+                }
+                stmt
+            }
+
+            /// 批量删除（自动带租户 WHERE 条件）
+            ///
+            /// 覆盖 sea-orm 原生 `Entity::delete_many()`，在开启字段隔离多租户时
+            /// 自动叠加 `WHERE tenant_id = ?` 条件，防止跨租户删除。
+            /// 需要跨租户删除时请使用 [`Entity::delete_many_without_tenant()`]。
+            pub fn delete_many() -> sea_orm::DeleteMany<Entity> {
+                let mut stmt = <Entity as sea_orm::EntityTrait>::delete_many();
+                if ::summer_sea_orm_ext::is_tenant_enforced()
+                    && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+                {
+                    let tenant_id = ::summer_sea_orm_ext::require_tenant_id();
+                    stmt = stmt.filter(Column::#column_ident.eq(tenant_id));
+                }
+                stmt
+            }
+
+            /// 批量更新（不带租户 WHERE 条件，用于跨租户场景）
+            ///
+            /// 直接委托给 sea-orm 原生 `Entity::update_many()`，不叠加租户过滤。
+            /// 仅供运维、数据迁移等需要跨租户操作的场景使用，业务代码不应调用此方法。
+            pub fn update_many_without_tenant() -> sea_orm::UpdateMany<Entity> {
+                <Entity as sea_orm::EntityTrait>::update_many()
+            }
+
+            /// 批量删除（不带租户 WHERE 条件，用于跨租户场景）
+            ///
+            /// 直接委托给 sea-orm 原生 `Entity::delete_many()`，不叠加租户过滤。
+            /// 仅供运维、数据迁移等需要跨租户操作的场景使用，业务代码不应调用此方法。
+            pub fn delete_many_without_tenant() -> sea_orm::DeleteMany<Entity> {
+                <Entity as sea_orm::EntityTrait>::delete_many()
+            }
+        }
+    }
+}
+
 /// 生成 `TenantEntity` trait 实现
 ///
 /// 返回租户列引用，供多租户拦截器使用。
@@ -1450,20 +1526,8 @@ fn expand_batch_update_method(
         quote! { #(#stmts)* }
     };
 
-    // tenant WHERE 过滤代码
-    let tenant_where_filter = if let Some(t) = tenant_field {
-        let t_column_ident = &t.column_ident;
-        quote! {
-            if ::summer_sea_orm_ext::is_tenant_enforced()
-                && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
-            {
-                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
-                query = query.filter(Column::#t_column_ident.eq(tenant_id));
-            }
-        }
-    } else {
-        TokenStream::new()
-    };
+    // 注：租户 WHERE 过滤由覆盖后的 Entity::update_many() 自动注入，
+    // 此处无需再手动添加 tenant_where_filter（避免重复 WHERE 条件）。
 
     quote! {
         #[automatically_derived]
@@ -1472,7 +1536,7 @@ fn expand_batch_update_method(
             ///
             /// - update 模式 fill 字段：在循环外调用 fill handler 一次，所有行用同一个值
             /// - 用户设置的普通字段：对每个字段生成 `CASE WHEN id = ? THEN ? ... ELSE col END`
-            /// - WHERE id IN (...) [AND tenant_id = ?]
+            /// - WHERE id IN (...) AND tenant_id = ?（租户过滤由 `Entity::update_many()` 覆盖自动注入）
             ///
             /// 不再使用 for 循环逐条 update，所有更新合并为单条 SQL。
             pub async fn update_many_with_fill<C>(
@@ -1496,14 +1560,14 @@ fn expand_batch_update_method(
                     ));
                 }
 
+                // Entity::update_many() 已被宏覆盖，开启字段隔离多租户时自动叠加租户 WHERE
                 let mut query = Entity::update_many();
                 // update 模式 fill 字段（对所有行相同值）
                 #update_fill_set_block
                 // 普通字段的 CASE WHEN 表达式
                 #case_when_block
-                // WHERE id IN (...) [AND tenant_id = ?]
+                // WHERE id IN (...)（租户 WHERE 已由 update_many() 注入）
                 query = query.filter(Column::#pk_column_ident.is_in(pk_values));
-                #tenant_where_filter
 
                 query.exec(db).await
             }
@@ -1542,14 +1606,15 @@ fn expand_batch_update_method(
                 db.transaction(|txn| {
                     Box::pin(async move {
                         // 第 1 步：批量 UPDATE（在事务内）
+                        // Entity::update_many() 已被宏覆盖，开启字段隔离多租户时自动叠加租户 WHERE
                         let mut query = Entity::update_many();
                         #update_fill_set_block
                         #case_when_block
                         query = query.filter(Column::#pk_column_ident.is_in(pk_values.clone()));
-                        #tenant_where_filter
                         query.exec(txn).await?;
 
                         // 第 2 步：批量 SELECT 取回更新后的 Model（在同一事务内）
+                        // Entity::find() 也已被宏覆盖，自动叠加租户 WHERE
                         let results = Entity::find()
                             .filter(Column::#pk_column_ident.is_in(pk_values))
                             .all(txn).await?;
@@ -1567,7 +1632,8 @@ fn expand_batch_update_method(
 /// 生成批量软删除方法
 ///
 /// 使用 `Entity::update_many()` + 主键 `is_in` 过滤，单条 SQL UPDATE 完成批量软删除。
-fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, tenant_field: &Option<TenantFieldInfo>, primary_key: &Option<PrimaryKeyInfo>) -> TokenStream {
+/// 租户 WHERE 条件由覆盖后的 `Entity::update_many()` 自动注入，无需在此手动添加。
+fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, _tenant_field: &Option<TenantFieldInfo>, primary_key: &Option<PrimaryKeyInfo>) -> TokenStream {
     let Some(sd) = soft_delete else {
         return TokenStream::new();
     };
@@ -1575,18 +1641,6 @@ fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, tenant_
     let sd_column_ident = &sd.column_ident;
     let del_value = &sd.del_value;
     let sd_field_type = &sd.field_type;
-
-    let tenant_filter_code = if let Some(t) = tenant_field {
-        let t_column_ident = &t.column_ident;
-        quote! {
-            if ::summer_sea_orm_ext::is_tenant_enforced() && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
-                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
-                query = query.filter(Column::#t_column_ident.eq(tenant_id));
-            }
-        }
-    } else {
-        TokenStream::new()
-    };
 
     let pk_extract_and_filter = if let Some(pk) = primary_key {
         let pk_field = &pk.field_ident;
@@ -1644,9 +1698,9 @@ fn expand_batch_delete_method(soft_delete: &Option<SoftDeleteFieldInfo>, tenant_
                 if models.is_empty() {
                     return Ok(sea_orm::UpdateResult::default());
                 }
+                // Entity::update_many() 已被宏覆盖，开启字段隔离多租户时自动叠加租户 WHERE
                 let mut query = Entity::update_many()
                     .col_expr(Column::#sd_column_ident, sea_query::Expr::value(#del_value as #sd_field_type));
-                #tenant_filter_code
                 #pk_extract_and_filter
                 query.exec(db).await
             }

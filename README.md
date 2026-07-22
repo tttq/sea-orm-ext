@@ -8,7 +8,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
 [![crates.io](https://img.shields.io/badge/crates.io-v0.0.1-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
 [![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/summer-sea-orm-ext)
-[![Test Status](https://img.shields.io/badge/tests-109%20passed-green?style=for-the-badge)](#测试覆盖)
+[![Test Status](https://img.shields.io/badge/tests-114%20passed-green?style=for-the-badge)](#测试覆盖)
 
 > ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，深度集成 Summer 框架
 
@@ -22,7 +22,7 @@
 |------|------|-------------------|
 | **🔄 自动填充** | INSERT/UPDATE 时自动填充 `created_by`、`updated_by` 等审计字段 | 对应 `MetaObjectHandler` |
 | **🛡️ 软删除** | DELETE 自动转为逻辑删除，自动过滤已删除记录 | 对应 `@TableLogic` |
-| **🏢 多租户** | Table/Database 两种隔离模式，CRUD 全自动租户过滤 | 对应 `@MultiTenant` |
+| **🏢 多租户** | Table/Database 两种隔离模式，SELECT/UPDATE/DELETE 全自动租户过滤 | 对应 `@MultiTenant` |
 | **⚡ Summer 集成** | 声明式配置 + 自动数据库切换，开箱即用 | 无直接对应 |
 | **📝 SQL 日志** | 打印完整 SQL（参数值注入）+ 独立参数列表，调试无忧 | 对应 `log-impl:2.x` |
 | **📄 分页查询** | Web 友好的分页扩展，自动从请求参数解析分页信息 | 对应 `PageHelper` |
@@ -242,6 +242,26 @@ let result = am.delete(&db).await?; // ✅ 软删除成功
     let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
     let orders = orders::Entity::find().all(&db).await?;
     // SQL: WHERE tenant_id = '1'
+}
+
+// 🔷 批量更新/删除：自动叠加租户 WHERE（防止跨租户操作）
+{
+    let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+    // 只更新租户 1 的记录，SQL: UPDATE ... WHERE tenant_id = '1'
+    orders::Entity::update_many()
+        .col_expr(Column::Quantity, Expr::value(0))
+        .exec(&db).await?;
+
+    // 只删除租户 1 的记录，SQL: DELETE ... WHERE tenant_id = '1'
+    orders::Entity::delete_many().exec(&db).await?;
+}
+
+// 🔷 跨租户运维场景：显式绕过租户过滤
+{
+    // 需跨租户的数据迁移、清理等场景使用 _without_tenant() 方法
+    orders::Entity::update_many_without_tenant()
+        .col_expr(Column::Quantity, Expr::value(0))
+        .exec(&db).await?; // 更新所有租户的记录
 }
 
 // 🔷 登录接口：临时禁用租户过滤
@@ -490,9 +510,13 @@ max_page_size = 2000
 | `find_by_id()` | 按主键查询，自动双重过滤 |
 | `find_with_deleted()` | 查询所有（含已删除） |
 | `find_without_tenant()` | 跳过租户过滤（保留软删除） |
+| `update_many()` | 批量更新，自动叠加 `WHERE tenant_id=?` |
+| `delete_many()` | 批量删除，自动叠加 `WHERE tenant_id=?` |
+| `update_many_without_tenant()` | 批量更新（跨租户，运维场景） |
+| `delete_many_without_tenant()` | 批量删除（跨租户，运维场景） |
 | `insert_many_with_fill()` | 批量插入（单条 SQL） |
-| `update_many_with_fill()` | 批量更新 |
-| `delete_many_soft()` | 批量软删除（单条 SQL） |
+| `update_many_with_fill()` | 批量更新（自动带租户 WHERE） |
+| `delete_many_soft()` | 批量软删除（单条 SQL，自动带租户 WHERE） |
 
 ---
 
@@ -527,11 +551,11 @@ summer_sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 |---------|--------|----------|
 | `crud_tests.rs` | 13 | 单条 CRUD、自动填充、字符串主键、UUID/Snowflake ID |
 | `macro_tests.rs` | 5 | 批量插入/更新/软删除 |
-| `integration_tests.rs` | 27 | 多租户隔离、TenantIdProvider、SQL 日志、SeaOrmExtConnection |
+| `integration_tests.rs` | 32 | 多租户隔离、TenantIdProvider、SQL 日志、SeaOrmExtConnection、update_many/delete_many 租户过滤 |
 | `unit_tests.rs` | 61 | 租户过滤、软删除、守卫模式、ConnectionStore |
 | `lib.rs` | 3 | 分页逻辑 |
 
-**总计：109 个测试，100% 通过**
+**总计：114 个测试，100% 通过**
 
 ```bash
 cargo test --workspace --features full
