@@ -233,6 +233,35 @@ pub struct TenantPluginConfig {
     /// ```
     #[serde(default)]
     pub max_retries: Option<u32>,
+    /// 是否开启 SQL 日志（完整 SQL + 参数值注入）。
+    ///
+    /// 设置为 `true` 后，所有通过 `SeaOrmExtConnection` 执行的 SQL 语句都会被
+    /// 拦截并打印完整 SQL（含参数值注入）和独立参数列表，方便调试。
+    ///
+    /// **与 `[summer-sea-orm-ext] enable_sql_log` 等效**，两者控制同一个全局开关。
+    /// 可以在任意一个配置块中设置，推荐在 `[summer-sea-orm-ext-tenant]` 中统一配置。
+    ///
+    /// # TOML 用法
+    ///
+    /// ```toml
+    /// [summer-sea-orm-ext-tenant]
+    /// enable_sql_log = true
+    /// ```
+    #[serde(default)]
+    pub enable_sql_log: bool,
+    /// 租户 ID 的 HTTP Header 名称（可选）
+    ///
+    /// 设置后，`TenantLayer` 中间件会从请求 header 中提取租户 ID。
+    /// 优先级：Header > TenantIdProvider > default_tenant_id
+    ///
+    /// # TOML 用法
+    ///
+    /// ```toml
+    /// [summer-sea-orm-ext-tenant]
+    /// tenant_id_header = "X-Tenant-Id"
+    /// ```
+    #[serde(default)]
+    pub tenant_id_header: Option<String>,
     #[serde(skip)]
     pub tenant_id_provider: Option<Arc<dyn TenantIdProvider>>,
     #[serde(skip)]
@@ -250,6 +279,8 @@ impl std::fmt::Debug for TenantPluginConfig {
             .field("default_databases", &self.default_databases)
             .field("ignored_tables", &self.ignored_tables)
             .field("max_retries", &self.max_retries)
+            .field("enable_sql_log", &self.enable_sql_log)
+            .field("tenant_id_header", &self.tenant_id_header)
             .field("tenant_id_provider", &self.tenant_id_provider.as_ref().map(|_| "..."))
             .field("tenant_database_provider", &self.tenant_database_provider.as_ref().map(|_| "..."))
             .finish()
@@ -267,6 +298,8 @@ impl Default for TenantPluginConfig {
             default_databases: None,
             ignored_tables: None,
             max_retries: None,
+            enable_sql_log: false,
+            tenant_id_header: None,
             tenant_id_provider: None,
             tenant_database_provider: None,
         }
@@ -373,6 +406,18 @@ impl Plugin for TenantPlugin {
             ignored_tables,
         });
 
+        // 注册 tenant_id_header（全局缓存，供 TenantLayer 中间件读取）
+        #[cfg(feature = "summer-web")]
+        {
+            crate::plugin::tenant_layer::set_tenant_header_name(config.tenant_id_header.clone());
+            if let Some(h) = &config.tenant_id_header {
+                tracing::info!(
+                    "TENANT-LAYER: tenant_id_header = '{}' (will extract tenant ID from HTTP header)",
+                    h
+                );
+            }
+        }
+
         // 失败重试次数：从配置读取，默认 0（不重试）
         let max_retries = config.max_retries.unwrap_or(0);
         if max_retries > 0 {
@@ -382,14 +427,23 @@ impl Plugin for TenantPlugin {
             );
         }
 
+        // SQL 日志开关：与 [summer-sea-orm-ext] enable_sql_log 等效，控制同一个全局开关
+        if config.enable_sql_log {
+            crate::set_sql_log_enabled(true);
+            tracing::info!("[summer-sea-orm-ext-tenant] SQL log enabled (complete SQL with parameters)");
+        } else {
+            tracing::debug!("[summer-sea-orm-ext-tenant] SQL log disabled (set enable_sql_log = true to enable)");
+        }
+
         if let Some(db) = app.get_component::<DatabaseConnection>() {
             crate::set_default_database(db);
             tracing::info!("Default database connection registered for tenant module");
         }
 
         // 注册默认数据库 fallback 链
+        // 使用 ext 版本存储，保留 SeaOrmExtConnection 包装（支持 SQL 日志和重试配置）
         if let Some(default_dbs) = &config.default_databases {
-            let mut connections = Vec::new();
+            let mut ext_connections = Vec::new();
             for entry in default_dbs {
                 match connect_from_entry_config(entry).await {
                     Ok(conn) => {
@@ -397,7 +451,7 @@ impl Plugin for TenantPlugin {
                             "Connected to default database (fallback chain): {}",
                             entry.url
                         );
-                        connections.push(conn);
+                        ext_connections.push(build_ext_conn(conn, max_retries));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -407,10 +461,10 @@ impl Plugin for TenantPlugin {
                     }
                 }
             }
-            if !connections.is_empty() {
-                crate::set_default_databases(connections);
+            if !ext_connections.is_empty() {
+                crate::set_default_databases_ext(ext_connections);
                 tracing::info!(
-                    "Default database fallback chain registered with {} databases",
+                    "Default database fallback chain registered with {} databases (with SQL log & retry support)",
                     config.default_databases.as_ref().map(|d| d.len()).unwrap_or(0)
                 );
             }
@@ -587,7 +641,7 @@ impl Plugin for TenantPlugin {
 #[cfg(feature = "summer-web")]
 pub mod tenant_layer {
     use super::*;
-    use crate::{get_tenant_id_provider, SeaOrmExtConnection, TenantContext};
+    use crate::{get_tenant_id_codec, get_tenant_id_provider, SeaOrmExtConnection, TenantContext};
     use summer_web::axum;
     use summer_web::axum::http::Request;
     use summer_web::axum::response::{IntoResponse, Response};
@@ -628,14 +682,49 @@ pub mod tenant_layer {
 
         fn call(&mut self, mut req: Request<B>) -> Self::Future {
             if is_tenant_enabled() {
-                if let Some(tenant_id) = resolve_tenant_id() {
-                    set_tenant_context(TenantContext {
-                        tenant_id: tenant_id.clone(),
+                // 1. 优先从 HTTP Header 提取（若配置了 tenant_id_header）
+                let header_tenant_id = extract_tenant_id_from_header(&req);
+
+                // 2. Header > TenantIdProvider > default_tenant_id
+                let raw_tenant_id = header_tenant_id
+                    .or_else(|| {
+                        get_tenant_id_provider().and_then(|p| p.get_tenant_id())
+                    })
+                    .or_else(|| {
+                        crate::get_tenant_config().and_then(|c| c.default_tenant_id.clone())
                     });
 
-                    if get_tenant_mode() == Some(TenantMode::Database) {
-                        if let Ok(Some(db)) = get_tenant_database() {
-                            req.extensions_mut().insert::<DatabaseConnection>(db);
+                // 3. 若拿到 tenant_id，进行解密（若注册了 codec），然后设置上下文
+                if let Some(tenant_id) = raw_tenant_id {
+                    let resolved: Option<Value> = match &tenant_id {
+                        Value::String(Some(s)) => {
+                            // 字符串类型才需要解密；其他类型直接使用
+                            if let Some(codec) = get_tenant_id_codec() {
+                                match codec.decrypt(s) {
+                                    Ok(decrypted) => Some(decrypted),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "TENANT-LAYER: failed to decrypt tenant_id from header: {} (skip setting tenant context)",
+                                            e
+                                        );
+                                        // 跳过租户上下文设置，使用默认库
+                                        None
+                                    }
+                                }
+                            } else {
+                                Some(tenant_id.clone())
+                            }
+                        }
+                        _ => Some(tenant_id.clone()),
+                    };
+
+                    if let Some(final_id) = resolved {
+                        set_tenant_context(TenantContext { tenant_id: final_id });
+
+                        if get_tenant_mode() == Some(TenantMode::Database) {
+                            if let Ok(Some(db)) = get_tenant_database() {
+                                req.extensions_mut().insert::<DatabaseConnection>(db);
+                            }
                         }
                     }
                 }
@@ -652,13 +741,29 @@ pub mod tenant_layer {
         }
     }
 
-    fn resolve_tenant_id() -> Option<Value> {
-        if let Some(provider) = get_tenant_id_provider() {
-            if let Some(id) = provider.get_tenant_id() {
-                return Some(id);
-            }
-        }
-        crate::get_tenant_config().and_then(|c| c.default_tenant_id.clone())
+    /// 从 HTTP header 提取租户 ID（若配置了 `tenant_id_header`）
+    ///
+    /// 优先级：Header > TenantIdProvider > default_tenant_id
+    fn extract_tenant_id_from_header<B>(req: &Request<B>) -> Option<Value> {
+        let header_name = get_tenant_header_name()?;
+
+        let name = axum::http::HeaderName::from_bytes(header_name.as_bytes()).ok()?;
+        req.headers().get(&name).and_then(|v| {
+            v.to_str().ok().map(|s| Value::String(Some(s.to_owned())))
+        })
+    }
+
+    /// 全局缓存的 tenant_id_header 名称（由 TenantPlugin::build 设置）
+    static TENANT_HEADER_NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+    /// 设置全局 tenant_id_header 名称（由 TenantPlugin::build 调用）
+    pub fn set_tenant_header_name(name: Option<String>) {
+        let _ = TENANT_HEADER_NAME.set(name);
+    }
+
+    /// 获取全局 tenant_id_header 名称
+    fn get_tenant_header_name() -> Option<String> {
+        TENANT_HEADER_NAME.get().cloned().flatten()
     }
 
     pub struct TenantDb(pub SeaOrmExtConnection);

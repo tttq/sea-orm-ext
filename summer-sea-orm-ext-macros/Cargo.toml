@@ -7,7 +7,7 @@
 
 [package]
 name = "summer-sea-orm-ext-macros"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Proc macros for summer-sea-orm-ext: DeriveAutoFill, DeriveSoftDelete, DeriveTenant, etc."
 license = "MIT"

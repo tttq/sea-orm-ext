@@ -11,6 +11,7 @@
 //! - `soft_delete` — 软删除 trait，提供默认的未删除/已删除标记值
 //! - `tenant` — 多租户核心: 租户模式、上下文、实体 trait、操作扩展、租户守卫
 //! - `tenant_store` — 租户数据库连接存储: `ConnectionStore` trait 及其实现
+//! - `dynamic_tenant` — 动态租户管理: 从主库查询租户配置、自动建立连接、健康检查
 //!
 //! # Re-exports
 //!
@@ -23,6 +24,7 @@
 
 mod config;
 mod circuit_breaker;
+mod dynamic_tenant;
 mod errors;
 mod fill;
 mod health;
@@ -37,6 +39,7 @@ pub mod plugin;
 
 pub use config::*;
 pub use circuit_breaker::*;
+pub use dynamic_tenant::*;
 pub use errors::*;
 pub use fill::*;
 pub use health::*;

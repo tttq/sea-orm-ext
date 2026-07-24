@@ -12,6 +12,12 @@
 //! | `DeriveTenant` | 多租户支持，在 insert 时自动注入租户 ID |
 //! | `DeriveAutoFillSoftDeleteTenant` | 同时启用自动填充、软删除和多租户 |
 //!
+//! ## 提供的属性宏
+//!
+//! | 属性宏 | 功能 |
+//! |---|---|
+//! | `#[ignore_tenant]` | 标记 async handler 函数，自动包入 `TenantIgnoreGuard`，跳过租户 WHERE 过滤 |
+//!
 //! ## 工作原理
 //!
 //! 所有派生宏都通过 `expand_derive` 统一入口处理，根据 `DeriveKind`
@@ -22,8 +28,8 @@
 //! - **SoftDeleteTrait 实现**：为 `Entity` 实现自定义的 `SoftDeleteTrait`。
 //! - **TenantEntity 实现**：为 `Entity` 实现自定义的 `TenantEntity`，
 //!   返回租户列信息。
-//! - **查询辅助方法**：在 `Entity` 上生成 `find_active()`(带软删除过滤,
-//!   已 deprecated，建议直接使用 `find()`)等便捷查询方法。
+//! - **查询辅助方法**：在 `Entity` 上生成 `find_with_deleted()`、
+//!   `find_without_tenant()` 等便捷查询方法。
 //!   `find()` 本身已自动叠加软删除与租户过滤。
 //! - **批量操作方法**：在 `Entity` 上生成 `insert_many_with_fill`、
 //!   `update_many_with_fill`、`delete_many_soft` 等批量操作辅助方法。
@@ -172,6 +178,60 @@ pub fn derive_auto_fill_tenant(input: proc_macro::TokenStream) -> proc_macro::To
 pub fn derive_auto_fill_soft_delete_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillSoftDeleteTenant, &input).into()
+}
+
+/// `#[ignore_tenant]` 属性宏
+///
+/// 标记一个 async handler 函数：在执行函数体之前自动构造
+/// `TenantIgnoreGuard`，跳过当前请求的租户 WHERE 过滤；
+/// 函数返回时 guard 自动 drop，恢复租户过滤。
+///
+/// **注意**：仅对 `async fn` 有效，且函数体内部所有数据库操作都会
+/// 跳过 `TenantMode::Table` 下的 `WHERE tenant_id = ?` 注入。
+/// 适用于跨租户聚合查询、系统配置读取、健康检查等场景。
+///
+/// # 示例
+///
+/// ```ignore
+/// use summer_sea_orm_ext::ignore_tenant;
+///
+/// #[ignore_tenant]
+/// async fn get_global_config(db: &DbConn) -> Result<Config, DbErr> {
+///     Config::find().one(db).await
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn ignore_tenant(
+    _attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let mut item: syn::ItemFn = match syn::parse(item) {
+        Ok(it) => it,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    // 校验：必须为 async fn
+    if item.sig.asyncness.is_none() {
+        return syn::Error::new_spanned(
+            &item.sig.fn_token,
+            "#[ignore_tenant] can only be applied to async functions",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // 取出原函数体的语句，包入 TenantIgnoreGuard scope
+    let original_block = &item.block;
+    let original_stmts = &original_block.stmts;
+
+    let new_block: syn::Block = syn::parse_quote! {{
+        let _guard = ::summer_sea_orm_ext::TenantIgnoreGuard::new();
+        #(#original_stmts)*
+    }};
+
+    item.block = Box::new(new_block);
+
+    quote! { #item }.into()
 }
 
 /// 统一的派生宏展开入口
@@ -958,13 +1018,6 @@ fn expand_find_methods(
         find_filters.push(sd_filter.clone());
         find_by_id_filters.push(sd_filter.clone());
         sd_filter_code.push(sd_filter);
-
-        method_decls.push(quote! {
-            #[deprecated(note = "use `Entity::find()` instead, which now auto-filters soft-deleted records")]
-            pub fn find_active() -> sea_orm::Select<Entity> {
-                Self::find()
-            }
-        });
     }
 
     if let Some(t) = tenant_field {

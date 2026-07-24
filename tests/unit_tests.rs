@@ -1252,3 +1252,604 @@ async fn test_tenant_db_database_mode_returns_tenant_conn() {
         assert_eq!(results[0].name, "TenantDB Product");
     }
 }
+
+// ===========================================================================
+// TenantIdCodec 加解密测试
+// ===========================================================================
+
+use summer_sea_orm_ext::{
+    TenantIdCodec, set_tenant_id_codec, get_tenant_id_codec, clear_tenant_id_codec,
+    TenantIgnoreGuard,
+};
+
+/// 简单的字符串前缀加解密器：encrypt 在前面加 "enc:" 前缀，decrypt 去除前缀。
+struct PrefixCodec;
+
+impl TenantIdCodec for PrefixCodec {
+    fn decrypt(&self, encrypted: &str) -> Result<Value, sea_orm::DbErr> {
+        if let Some(stripped) = encrypted.strip_prefix("enc:") {
+            Ok(Value::String(Some(stripped.to_string())))
+        } else {
+            Err(sea_orm::DbErr::Custom(format!(
+                "invalid encrypted tenant_id: {}",
+                encrypted
+            )))
+        }
+    }
+
+    fn encrypt(&self, tenant_id: &Value) -> Result<String, sea_orm::DbErr> {
+        match tenant_id {
+            Value::String(Some(s)) => Ok(format!("enc:{}", s)),
+            _ => Err(sea_orm::DbErr::Custom("unsupported tenant_id type".into())),
+        }
+    }
+}
+
+#[test]
+#[serial]
+fn test_tenant_id_codec_register_and_get() {
+    reset_global_state();
+
+    assert!(get_tenant_id_codec().is_none(), "codec should be None initially");
+
+    set_tenant_id_codec(Arc::new(PrefixCodec));
+    assert!(get_tenant_id_codec().is_some(), "codec should be registered");
+
+    clear_tenant_id_codec();
+    assert!(get_tenant_id_codec().is_none(), "codec should be cleared");
+}
+
+#[test]
+#[serial]
+fn test_tenant_id_codec_encrypt_decrypt() {
+    reset_global_state();
+
+    let codec = PrefixCodec;
+    let original = Value::String(Some("tenant-123".to_string()));
+
+    let encrypted = codec.encrypt(&original).unwrap();
+    assert_eq!(encrypted, "enc:tenant-123");
+
+    let decrypted = codec.decrypt(&encrypted).unwrap();
+    match decrypted {
+        Value::String(Some(s)) => assert_eq!(s, "tenant-123"),
+        _ => panic!("expected String value"),
+    }
+}
+
+#[test]
+#[serial]
+fn test_tenant_id_codec_decrypt_failure() {
+    reset_global_state();
+
+    let codec = PrefixCodec;
+    let result = codec.decrypt("invalid-no-prefix");
+    assert!(result.is_err(), "decrypt should fail for invalid input");
+}
+
+// ===========================================================================
+// TenantIgnoreGuard 测试（验证 #[ignore_tenant] 宏底层机制）
+// ===========================================================================
+
+#[test]
+#[serial]
+fn test_tenant_ignore_guard_disables_filter() {
+    reset_global_state();
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    // 启用租户过滤时 is_tenant_enforced 应为 true
+    assert!(is_tenant_enforced());
+
+    // 构造 guard 后应禁用
+    {
+        let _guard = TenantIgnoreGuard::new();
+        assert!(!is_tenant_enforced(), "TenantIgnoreGuard should disable enforcement");
+    }
+
+    // guard 释放后应恢复
+    assert!(is_tenant_enforced(), "enforcement should restore after guard drops");
+}
+
+#[test]
+#[serial]
+fn test_tenant_ignore_guard_nested() {
+    reset_global_state();
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    assert!(is_tenant_enforced());
+
+    let outer = TenantIgnoreGuard::new();
+    assert!(!is_tenant_enforced());
+
+    {
+        let _inner = TenantIgnoreGuard::new();
+        assert!(!is_tenant_enforced(), "nested guard should still disable");
+    }
+
+    // 内层 guard 释放后仍应禁用（外层还在）
+    assert!(!is_tenant_enforced(), "outer guard should still be in effect");
+
+    drop(outer);
+    assert!(is_tenant_enforced(), "enforcement should restore after all guards drop");
+}
+
+// ===========================================================================
+// DynamicTenantConfigProvider / TenantManager 测试
+// ===========================================================================
+
+use summer_sea_orm_ext::{
+    DynamicTenantConfigProvider, TenantConnectionConfig, TenantManager,
+    DynamicTenantConfig,
+};
+use async_trait::async_trait;
+
+/// 测试用 DynamicTenantConfigProvider：返回两个 sqlite 内存库配置
+struct TestDynamicConfigProvider {
+    configs: Vec<TenantConnectionConfig>,
+}
+
+impl TestDynamicConfigProvider {
+    fn new() -> Self {
+        Self {
+            configs: vec![
+                TenantConnectionConfig {
+                    tenant_id: "tenant-a".to_string(),
+                    db_url: "sqlite::memory:".to_string(),
+                    db_driver: "sqlite".to_string(),
+                    max_connections: Some(5),
+                    min_connections: Some(1),
+                    connect_timeout_secs: Some(10),
+                    acquire_timeout_secs: Some(10),
+                    idle_timeout_secs: Some(60),
+                    enable_logging: Some(false),
+                },
+                TenantConnectionConfig {
+                    tenant_id: "tenant-b".to_string(),
+                    db_url: "sqlite::memory:".to_string(),
+                    db_driver: "sqlite".to_string(),
+                    max_connections: Some(5),
+                    min_connections: Some(1),
+                    connect_timeout_secs: Some(10),
+                    acquire_timeout_secs: Some(10),
+                    idle_timeout_secs: Some(60),
+                    enable_logging: Some(false),
+                },
+            ],
+        }
+    }
+}
+
+#[async_trait]
+impl DynamicTenantConfigProvider for TestDynamicConfigProvider {
+    async fn load_all(&self, _main_db: &sea_orm::DatabaseConnection) -> Result<Vec<TenantConnectionConfig>, sea_orm::DbErr> {
+        Ok(self.configs.clone())
+    }
+
+    async fn load_one(&self, _main_db: &sea_orm::DatabaseConnection, tenant_id: &str) -> Result<Option<TenantConnectionConfig>, sea_orm::DbErr> {
+        Ok(self.configs.iter().find(|c| c.tenant_id == tenant_id).cloned())
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_dynamic_tenant_manager_initialize() {
+    reset_global_state();
+
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let config = DynamicTenantConfig::default();
+
+    let manager = TenantManager::new(main_db, store, provider, config);
+
+    // 初始化：应加载 2 个租户
+    manager.initialize().await.unwrap();
+
+    // 验证缓存
+    let tenant_a = manager.inner_get_store().get(&Value::String(Some("tenant-a".to_string())));
+    let tenant_b = manager.inner_get_store().get(&Value::String(Some("tenant-b".to_string())));
+    assert!(tenant_a.is_some(), "tenant-a should be in cache");
+    assert!(tenant_b.is_some(), "tenant-b should be in cache");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_dynamic_tenant_manager_add_and_remove() {
+    reset_global_state();
+
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let config = DynamicTenantConfig::default();
+
+    let manager = TenantManager::new(main_db, store, provider, config);
+
+    // 初始为空
+    assert_eq!(manager.inner_get_store().len(), 0);
+
+    // 添加 tenant-a
+    manager.add_tenant("tenant-a").await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 1);
+    assert!(manager.inner_get_store().get(&Value::String(Some("tenant-a".to_string()))).is_some());
+
+    // 添加 tenant-b
+    manager.add_tenant("tenant-b").await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 2);
+
+    // 移除 tenant-a
+    manager.remove_tenant("tenant-a").await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 1);
+    assert!(manager.inner_get_store().get(&Value::String(Some("tenant-a".to_string()))).is_none());
+    assert!(manager.inner_get_store().get(&Value::String(Some("tenant-b".to_string()))).is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_dynamic_tenant_manager_refresh_cache() {
+    reset_global_state();
+
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let config = DynamicTenantConfig::default();
+
+    let manager = TenantManager::new(main_db, store, provider, config);
+
+    // 初始化
+    manager.initialize().await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 2);
+
+    // 全量重载
+    manager.refresh_cache().await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 2, "refresh should reload all tenants");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_dynamic_tenant_manager_update_tenant() {
+    reset_global_state();
+
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let config = DynamicTenantConfig::default();
+
+    let manager = TenantManager::new(main_db, store, provider, config);
+
+    // 添加 tenant-a
+    manager.add_tenant("tenant-a").await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 1);
+
+    // 更新 tenant-a：先移除再重新添加
+    manager.update_tenant("tenant-a").await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 1, "update should keep count the same");
+    assert!(manager.inner_get_store().get(&Value::String(Some("tenant-a".to_string()))).is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_dynamic_tenant_manager_add_nonexistent_fails() {
+    reset_global_state();
+
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let config = DynamicTenantConfig::default();
+
+    let manager = TenantManager::new(main_db, store, provider, config);
+
+    // 添加不存在的租户应失败
+    let result = manager.add_tenant("nonexistent-tenant").await;
+    assert!(result.is_err(), "adding a nonexistent tenant should fail");
+}
+
+// ===========================================================================
+// 组合场景测试：动态租户 + ignore_tenant + 加解密
+// ===========================================================================
+
+use summer_sea_orm_ext::ignore_tenant;
+
+/// 组合场景 1：TenantIdCodec 加解密 + TenantGuard 上下文设置
+///
+/// 模拟前端传入加密后的 tenant_id → 后端解密 → 设置租户上下文 → 插入数据 → 验证
+#[tokio::test]
+#[serial]
+async fn test_combo_tenant_id_codec_with_guard_and_insert() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("codec_user")));
+
+    // 注册加解密器
+    set_tenant_id_codec(Arc::new(PrefixCodec));
+
+    // 开启 Table 模式多租户
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None, // 不设默认，强制由 codec 解密后提供
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    // 模拟前端传入的加密 tenant_id（"enc:tenant-100"）
+    let encrypted_from_frontend = "enc:tenant-100";
+
+    // 后端拿到加密 id 后解密
+    let codec = get_tenant_id_codec().expect("codec should be registered");
+    let decrypted = codec.decrypt(encrypted_from_frontend).unwrap();
+    match &decrypted {
+        Value::String(Some(s)) => assert_eq!(s, "tenant-100"),
+        _ => panic!("decrypted value should be String"),
+    }
+
+    // 用解密后的 tenant_id 设置上下文并插入数据
+    {
+        let _guard = TenantGuard::set(decrypted.clone());
+        let inserted = new_product("Codec Test Product", Some(50.0))
+            .insert(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            inserted.tenant_id,
+            Some("tenant-100".to_string()),
+            "inserted record should have decrypted tenant_id"
+        );
+    }
+
+    // 验证：用解密后的 tenant_id 查询应能查到记录
+    {
+        let _guard = TenantGuard::set(decrypted);
+        let results = Product::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Codec Test Product");
+        assert_eq!(results[0].tenant_id, Some("tenant-100".to_string()));
+    }
+
+    // 验证：未设置 tenant_id 时查询应返回空（除非有默认）
+    {
+        let results = Product::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 0, "without tenant context, no records visible");
+    }
+
+    clear_tenant_id_codec();
+}
+
+/// 组合场景 2：动态租户管理初始化 + #[ignore_tenant] 跨租户查询
+///
+/// 验证动态租户管理初始化的连接可以正常使用，
+/// 且 #[ignore_tenant] 宏在 Table 模式下能跳过 WHERE 过滤。
+#[tokio::test]
+#[serial]
+async fn test_combo_dynamic_tenant_with_ignore_tenant_macro() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("combo_user")));
+
+    // 开启 Table 模式多租户（动态租户管理仅在 Database 模式生效，此处仅测 ignore_tenant）
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("t1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    // 在不同租户上下文下插入数据
+    {
+        let _guard = TenantGuard::set(Value::String(Some("t1".to_string())));
+        new_product("T1-Combo-A", Some(10.0)).insert(&db).await.unwrap();
+        new_product("T1-Combo-B", Some(20.0)).insert(&db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("t2".to_string())));
+        new_product("T2-Combo-A", Some(100.0)).insert(&db).await.unwrap();
+    }
+
+    // 正常查询：租户 t1 只能看到 2 条
+    {
+        let _guard = TenantGuard::set(Value::String(Some("t1".to_string())));
+        let results = Product::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 2, "tenant t1 should see 2 records");
+    }
+
+    // 使用 #[ignore_tenant] 跨租户查询：应看到全部 3 条
+    let all_count = count_all_products_with_ignore_tenant(&db).await;
+    assert_eq!(all_count, 3, "ignore_tenant should see all 3 records across tenants");
+
+    // 宏函数返回后，租户过滤应恢复
+    assert!(is_tenant_enforced(), "tenant filter should restore after macro call");
+}
+
+/// 辅助函数：被 #[ignore_tenant] 标记，跨租户查询所有产品
+#[ignore_tenant]
+async fn count_all_products_with_ignore_tenant(db: &sea_orm::DatabaseConnection) -> usize {
+    // 函数体内租户过滤应被禁用
+    assert!(!is_tenant_enforced(), "inside #[ignore_tenant], filter should be disabled");
+    Product::find().all(db).await.unwrap().len()
+}
+
+/// 组合场景 3：TenantIdCodec 解密失败时不应设置租户上下文
+///
+/// 模拟前端传入无效的加密 tenant_id → 解密失败 → 跳过上下文设置 → 使用默认库
+#[tokio::test]
+#[serial]
+async fn test_combo_tenant_id_codec_decrypt_failure_skips_context() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("fail_user")));
+
+    // 注册加解密器
+    set_tenant_id_codec(Arc::new(PrefixCodec));
+
+    // 开启 Table 模式多租户，设置默认 tenant_id
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("default-t".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    // 模拟前端传入无效的加密 tenant_id（无 "enc:" 前缀）
+    let invalid_encrypted = "invalid-no-prefix";
+
+    // 解密应失败
+    let codec = get_tenant_id_codec().expect("codec should be registered");
+    let result = codec.decrypt(invalid_encrypted);
+    assert!(result.is_err(), "decrypt should fail for invalid input");
+
+    // 解密失败后，业务层应跳过设置租户上下文，使用 default_tenant_id
+    // 这里模拟 TenantLayer 的行为：解密失败时不调用 set_tenant_context
+    // 因此 get_current_tenant_id() 应返回 default_tenant_id
+    let current = get_current_tenant_id();
+    assert_eq!(
+        current,
+        Some(Value::String(Some("default-t".to_string()))),
+        "decrypt failure should fall back to default_tenant_id"
+    );
+
+    clear_tenant_id_codec();
+}
+
+/// 组合场景 4：动态租户管理 + 多租户数据隔离
+///
+/// 验证通过 DynamicTenantManager 初始化的连接在不同租户间是隔离的。
+#[tokio::test]
+#[serial]
+async fn test_combo_dynamic_tenant_data_isolation() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("iso_user")));
+
+    // 使用动态租户管理器初始化两个租户连接
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let config = DynamicTenantConfig::default();
+
+    let manager = TenantManager::new(main_db, store, provider, config);
+    manager.initialize().await.unwrap();
+
+    assert_eq!(manager.inner_get_store().len(), 2, "should have 2 tenants initialized");
+
+    // 获取两个租户的连接
+    let tenant_a_db = manager
+        .inner_get_store()
+        .get(&Value::String(Some("tenant-a".to_string())))
+        .expect("tenant-a connection should exist");
+    let tenant_b_db = manager
+        .inner_get_store()
+        .get(&Value::String(Some("tenant-b".to_string())))
+        .expect("tenant-b connection should exist");
+
+    // 在租户 A 的库中创建表并插入数据
+    setup_product_table(&tenant_a_db).await;
+    new_product("TenantA-Isolation", Some(100.0))
+        .insert(&tenant_a_db)
+        .await
+        .unwrap();
+
+    // 在租户 B 的库中创建表并插入数据
+    setup_product_table(&tenant_b_db).await;
+    new_product("TenantB-Isolation", Some(200.0))
+        .insert(&tenant_b_db)
+        .await
+        .unwrap();
+
+    // 验证隔离性：租户 A 的库只能看到 A 的数据
+    let a_results = Product::find_without_tenant().all(&tenant_a_db).await.unwrap();
+    assert_eq!(a_results.len(), 1, "tenant-a db should have 1 record");
+    assert_eq!(a_results[0].name, "TenantA-Isolation");
+
+    // 验证隔离性：租户 B 的库只能看到 B 的数据
+    let b_results = Product::find_without_tenant().all(&tenant_b_db).await.unwrap();
+    assert_eq!(b_results.len(), 1, "tenant-b db should have 1 record");
+    assert_eq!(b_results[0].name, "TenantB-Isolation");
+
+    // 动态移除租户 A 后，缓存中应不再有 A 的连接
+    manager.remove_tenant("tenant-a").await.unwrap();
+    assert_eq!(manager.inner_get_store().len(), 1, "should have 1 tenant after removal");
+    assert!(
+        manager.inner_get_store()
+            .get(&Value::String(Some("tenant-a".to_string())))
+            .is_none(),
+        "tenant-a should be removed from cache"
+    );
+    assert!(
+        manager.inner_get_store()
+            .get(&Value::String(Some("tenant-b".to_string())))
+            .is_some(),
+        "tenant-b should still be in cache"
+    );
+}
+
+/// 组合场景 5：TenantIgnoreGuard 嵌套 + #[ignore_tenant] 宏共存
+///
+/// 验证手动构造的 TenantIgnoreGuard 与宏生成的 guard 能正确嵌套。
+#[tokio::test]
+#[serial]
+async fn test_combo_manual_guard_with_ignore_tenant_macro() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("nest_user")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    assert!(is_tenant_enforced(), "filter should be enforced initially");
+
+    // 手动构造外层 guard
+    let outer_guard = TenantIgnoreGuard::new();
+    assert!(!is_tenant_enforced(), "outer guard should disable filter");
+
+    // 调用被 #[ignore_tenant] 标记的函数（内部会再构造一个 guard）
+    let result = nested_ignore_tenant_helper().await;
+    assert_eq!(result, 100);
+
+    // 内层 guard 释放后，外层 guard 仍应保持禁用状态
+    assert!(!is_tenant_enforced(), "outer guard should still be in effect");
+
+    // 释放外层 guard
+    drop(outer_guard);
+    assert!(is_tenant_enforced(), "filter should restore after all guards drop");
+}
+
+/// 辅助函数：在已存在外层 TenantIgnoreGuard 的情况下被 #[ignore_tenant] 调用
+#[ignore_tenant]
+async fn nested_ignore_tenant_helper() -> i32 {
+    // 即使是嵌套场景，过滤也应被禁用（计数器 > 0）
+    assert!(!is_tenant_enforced(), "nested #[ignore_tenant] should keep filter disabled");
+    100
+}

@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-summer-sea-orm-ext = { version = "0.0.1", features = ["full"] }
+summer-sea-orm-ext = { version = "0.0.2", features = ["full"] }
 summer = "0.6.0"
 summer-web = "0.6.0"
 ```

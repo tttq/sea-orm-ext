@@ -1,5 +1,5 @@
 use sea_orm::{ColumnTrait, ConnectOptions, DatabaseConnection, DbErr, EntityTrait, QueryFilter};
-use sea_query::{DeleteStatement, UpdateStatement, Value};
+use sea_query::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -113,6 +113,101 @@ pub trait TenantIdProvider: Send + Sync + 'static {
 
 pub trait TenantDatabaseProvider: Send + Sync + 'static {
     fn provide(&self) -> HashMap<Value, ConnectOptions>;
+}
+
+/// 租户 ID 加解密器
+///
+/// 当应用需要在前端暴露加密后的租户 ID 时，实现此 trait 并通过
+/// [`set_tenant_id_codec`] 注册。`TenantLayer` 中间件在获取到原始 tenant_id 后，
+/// 会检查是否注册了此 trait：
+/// - **已注册**：先调用 `decrypt()` 解密，再设置租户上下文
+/// - **未注册**：直接使用原始 tenant_id，不做加解密
+///
+/// 典型场景：JWT token 中的 tenant_id 加密 / URL 路径参数中的加密 tenant_id
+///
+/// # 示例
+///
+/// ```ignore
+/// use summer_sea_orm_ext::{TenantIdCodec, set_tenant_id_codec};
+/// use sea_orm::DbErr;
+/// use sea_query::Value;
+/// use std::sync::Arc;
+///
+/// struct MyCodec;
+///
+/// impl TenantIdCodec for MyCodec {
+///     fn decrypt(&self, encrypted: &str) -> Result<Value, DbErr> {
+///         // 解密逻辑
+///         Ok(Value::String(Some(encrypted.to_string())))
+///     }
+///
+///     fn encrypt(&self, tenant_id: &Value) -> Result<String, DbErr> {
+///         // 加密逻辑
+///         match tenant_id {
+///             Value::String(Some(s)) => Ok(s.clone()),
+///             _ => Err(DbErr::Custom("unsupported".into())),
+///         }
+///     }
+/// }
+///
+/// set_tenant_id_codec(Arc::new(MyCodec));
+/// ```
+pub trait TenantIdCodec: Send + Sync + 'static {
+    /// 解密：将前端传入的密文转为内部 tenant_id
+    ///
+    /// `TenantLayer` 中间件在获取到原始 tenant_id 后调用此方法。
+    /// 解密失败返回 `Err`，中间件会记录日志并跳过该请求的租户上下文设置。
+    fn decrypt(&self, encrypted: &str) -> Result<Value, DbErr>;
+
+    /// 加密：将内部 tenant_id 转为前端可见的密文
+    ///
+    /// 用于生成返回给前端的 tenant_id
+    fn encrypt(&self, tenant_id: &Value) -> Result<String, DbErr>;
+}
+
+// ============================================================================
+// TenantIdCodec 全局注册
+// ============================================================================
+
+type SharedTenantIdCodec = Arc<RwLock<Option<Arc<dyn TenantIdCodec>>>>;
+
+static TENANT_ID_CODEC: OnceLock<SharedTenantIdCodec> = OnceLock::new();
+
+fn tenant_id_codec_store() -> &'static SharedTenantIdCodec {
+    TENANT_ID_CODEC.get_or_init(|| Arc::new(RwLock::new(None)))
+}
+
+/// 注册租户 ID 加解密器
+///
+/// 注册后，`TenantLayer` 中间件会自动对 tenant_id 进行解密。
+/// 详见 [`TenantIdCodec`] trait 文档。
+pub fn set_tenant_id_codec(codec: Arc<dyn TenantIdCodec>) {
+    let store = tenant_id_codec_store();
+    match store.write() {
+        Ok(mut guard) => *guard = Some(codec),
+        Err(_) => tracing::error!("TENANT-CODEC: lock poisoned, set_tenant_id_codec ignored"),
+    }
+}
+
+/// 获取已注册的租户 ID 加解密器
+pub fn get_tenant_id_codec() -> Option<Arc<dyn TenantIdCodec>> {
+    let store = tenant_id_codec_store();
+    match store.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("TENANT-CODEC: lock poisoned, get_tenant_id_codec returning None");
+            None
+        }
+    }
+}
+
+/// 清除已注册的租户 ID 加解密器
+pub fn clear_tenant_id_codec() {
+    let store = tenant_id_codec_store();
+    match store.write() {
+        Ok(mut guard) => *guard = None,
+        Err(_) => tracing::error!("TENANT-CODEC: lock poisoned, clear_tenant_id_codec ignored"),
+    }
 }
 
 pub fn clear_tenant_config() {
@@ -252,11 +347,11 @@ pub fn is_tenant_enforced() -> bool {
 }
 
 thread_local! {
-    static TENANT_FILTER_DISABLED: Cell<bool> = const { Cell::new(false) };
+    static TENANT_FILTER_DISABLED_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 fn is_tenant_filter_disabled() -> bool {
-    TENANT_FILTER_DISABLED.with(|f| f.get())
+    TENANT_FILTER_DISABLED_DEPTH.with(|f| f.get() > 0)
 }
 
 pub struct TenantIgnoreGuard {
@@ -271,14 +366,14 @@ impl Default for TenantIgnoreGuard {
 
 impl TenantIgnoreGuard {
     pub fn new() -> Self {
-        TENANT_FILTER_DISABLED.with(|f| f.set(true));
+        TENANT_FILTER_DISABLED_DEPTH.with(|f| f.set(f.get().saturating_add(1)));
         Self { _private: () }
     }
 }
 
 impl Drop for TenantIgnoreGuard {
     fn drop(&mut self) {
-        TENANT_FILTER_DISABLED.with(|f| f.set(false));
+        TENANT_FILTER_DISABLED_DEPTH.with(|f| f.set(f.get().saturating_sub(1)));
     }
 }
 
@@ -344,46 +439,6 @@ where
         let tenant_id = require_tenant_id();
         self.filter(E::tenant_column().eq(tenant_id))
     }
-}
-
-/// 为 `UpdateStatement` 叠加租户 WHERE 条件（底层 sea_query 接口）
-///
-/// **已废弃**：请优先使用宏覆盖后的 `Entity::update_many()`，它会自动注入租户 WHERE。
-/// 仅在需要直接操作 `sea_query::UpdateStatement` 的特殊场景下使用此函数。
-#[deprecated(since = "0.0.1", note = "use `Entity::update_many()` which now auto-injects tenant WHERE")]
-pub fn apply_tenant_condition<E>(mut stmt: UpdateStatement) -> UpdateStatement
-where
-    E: TenantEntity,
-{
-    if !is_tenant_enforced() {
-        return stmt;
-    }
-    if is_table_tenant_ignored(E::default().table_name()) {
-        return stmt;
-    }
-    let tenant_id = require_tenant_id();
-    stmt.cond_where(E::tenant_column().eq(tenant_id));
-    stmt
-}
-
-/// 为 `DeleteStatement` 叠加租户 WHERE 条件（底层 sea_query 接口）
-///
-/// **已废弃**：请优先使用宏覆盖后的 `Entity::delete_many()`，它会自动注入租户 WHERE。
-/// 仅在需要直接操作 `sea_query::DeleteStatement` 的特殊场景下使用此函数。
-#[deprecated(since = "0.0.1", note = "use `Entity::delete_many()` which now auto-injects tenant WHERE")]
-pub fn apply_tenant_delete_condition<E>(mut stmt: DeleteStatement) -> DeleteStatement
-where
-    E: TenantEntity,
-{
-    if !is_tenant_enforced() {
-        return stmt;
-    }
-    if is_table_tenant_ignored(E::default().table_name()) {
-        return stmt;
-    }
-    let tenant_id = require_tenant_id();
-    stmt.cond_where(E::tenant_column().eq(tenant_id));
-    stmt
 }
 
 pub struct TenantGuard;
@@ -468,7 +523,10 @@ pub fn get_default_database() -> Option<DatabaseConnection> {
 // ============================================================================
 
 /// 默认数据库 fallback 链：主库故障时按顺序尝试 fallback 库
-type SharedDefaultDbs = Arc<RwLock<Vec<DatabaseConnection>>>;
+///
+/// 内部存储 `SeaOrmExtConnection` 以支持 SQL 日志拦截和重试配置。
+/// 公开 API 返回 `DatabaseConnection` 以保持向后兼容。
+type SharedDefaultDbs = Arc<RwLock<Vec<SeaOrmExtConnection>>>;
 
 static DEFAULT_DBS: OnceLock<SharedDefaultDbs> = OnceLock::new();
 
@@ -477,11 +535,26 @@ fn default_dbs_inner() -> &'static SharedDefaultDbs {
 }
 
 /// 设置默认数据库 fallback 链（按顺序，第一个为主库，后续为 fallback）
+///
+/// 传入的 `DatabaseConnection` 会被自动包装为 `SeaOrmExtConnection`，
+/// 以支持 SQL 日志拦截和重试配置。
 pub fn set_default_databases(dbs: Vec<DatabaseConnection>) {
+    let ext_dbs: Vec<SeaOrmExtConnection> = dbs
+        .into_iter()
+        .map(SeaOrmExtConnection::new)
+        .collect();
+    set_default_databases_ext(ext_dbs);
+}
+
+/// 设置默认数据库 fallback 链（ext 版本，直接传入 `SeaOrmExtConnection`）
+///
+/// 与 [`set_default_databases`] 不同，此函数直接存储 `SeaOrmExtConnection`，
+/// 保留原有的 `max_retries` 等 ext 配置。
+pub fn set_default_databases_ext(dbs: Vec<SeaOrmExtConnection>) {
     let inner = default_dbs_inner();
     match inner.write() {
         Ok(mut guard) => *guard = dbs,
-        Err(_) => tracing::error!("DEFAULT-DBS: lock poisoned, set_default_databases ignored"),
+        Err(_) => tracing::error!("DEFAULT-DBS: lock poisoned, set_default_databases_ext ignored"),
     }
 }
 
@@ -489,9 +562,24 @@ pub fn set_default_databases(dbs: Vec<DatabaseConnection>) {
 pub fn get_default_databases() -> Vec<DatabaseConnection> {
     let inner = default_dbs_inner();
     match inner.read() {
-        Ok(guard) => guard.clone(),
+        Ok(guard) => guard.iter().map(|ext| ext.inner().clone()).collect(),
         Err(_) => {
             tracing::error!("DEFAULT-DBS: lock poisoned, get_default_databases returning empty vec");
+            Vec::new()
+        }
+    }
+}
+
+/// 获取默认数据库 fallback 链（ext 版本，返回 `SeaOrmExtConnection`）
+///
+/// 与 [`get_default_databases`] 不同，此函数返回 `SeaOrmExtConnection`，
+/// 支持 SQL 日志拦截和重试配置。
+pub fn get_default_databases_ext() -> Vec<SeaOrmExtConnection> {
+    let inner = default_dbs_inner();
+    match inner.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            tracing::error!("DEFAULT-DBS: lock poisoned, get_default_databases_ext returning empty vec");
             Vec::new()
         }
     }
@@ -506,12 +594,26 @@ pub fn get_default_databases() -> Vec<DatabaseConnection> {
 /// 若需要健康检查，请使用 [`get_available_default_database_async`]。
 /// 失败的连接会由 `SeaOrmExtConnection` 的重试机制处理。
 pub fn get_available_default_database() -> Option<DatabaseConnection> {
-    let dbs = get_default_databases();
-    if let Some(db) = dbs.first() {
-        return Some(db.clone());
+    let dbs = get_default_databases_ext();
+    if let Some(ext) = dbs.first() {
+        return Some(ext.inner().clone());
     }
     // fallback 链为空，回退到单库模式
     get_default_database()
+}
+
+/// 从 fallback 链中获取第一个可用的数据库连接（ext 版本，返回 `SeaOrmExtConnection`）。
+///
+/// 与 [`get_available_default_database`] 不同，此函数返回 `SeaOrmExtConnection`，
+/// 支持 SQL 日志拦截和重试配置。推荐在需要 SQL 日志的场景使用。
+pub fn get_available_default_database_ext() -> Option<SeaOrmExtConnection> {
+    let dbs = get_default_databases_ext();
+    if let Some(ext) = dbs.first() {
+        return Some(ext.clone());
+    }
+    // fallback 链为空，回退到单库模式
+    // 注意：单库模式存储的是 DatabaseConnection，需要包装为 ext
+    get_default_database().map(SeaOrmExtConnection::new)
 }
 
 /// 从 fallback 链中获取第一个可用的数据库连接（异步版本，带健康检查）。
@@ -519,10 +621,10 @@ pub fn get_available_default_database() -> Option<DatabaseConnection> {
 /// 通过 `ping()` 探活，依次尝试 fallback 链中的每个数据库，返回第一个可用的。
 #[cfg(feature = "runtime-tokio")]
 pub async fn get_available_default_database_async() -> Option<DatabaseConnection> {
-    let dbs = get_default_databases();
-    for db in &dbs {
-        match db.ping().await {
-            Ok(()) => return Some(db.clone()),
+    let dbs = get_default_databases_ext();
+    for ext in &dbs {
+        match ext.ping().await {
+            Ok(()) => return Some(ext.inner().clone()),
             Err(e) => {
                 tracing::warn!(
                     "DATABASE-FAILOVER: database ping failed, trying next in fallback chain: {}",

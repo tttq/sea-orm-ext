@@ -4,6 +4,61 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.2] - 2026-07-22
+
+### Added
+
+- **多租户 WHERE 自动注入覆盖**：为 `Entity::update_many()` 和 `Entity::delete_many()` 添加宏覆盖实现，开启字段隔离多租户（`TenantMode::Table`）时自动在 WHERE 条件中叠加 `tenant_id = ?`，防止跨租户更新/删除
+  - 新增 `Entity::update_many_without_tenant()` / `Entity::delete_many_without_tenant()` 方法用于跨租户运维场景
+  - 移除 `expand_batch_update_method` / `expand_batch_delete_method` 中冗余的 `tenant_where_filter`（由覆盖后的 `update_many()` 统一注入）
+  - 安全保障：租户上下文未设置时 `require_tenant_id()` 返回 `Value::Int(None)`（SQL NULL），`WHERE tenant_id = NULL` 永远为 false，保证安全失败
+- **动态租户管理（`DynamicTenantPlugin`）**：基于主库查询的动态租户连接管理，**仅在 `TenantMode::Database` 下生效**
+  - 新增 `DynamicTenantConfigProvider` trait：用户实现 `load_all()` / `load_one()` 从主库查询租户连接配置，框架不关心租户表结构
+  - 新增 `TenantManager`：启动时自动加载所有租户、建立连接并缓存；运行时支持 `add_tenant()` / `update_tenant()` / `remove_tenant()` / `refresh_cache()` 动态同步缓存
+  - 新增 `TenantConnectionConfig`：框架定义的连接配置结构，与用户 Entity 解耦
+  - 后台健康检查任务（`runtime-tokio` feature）：定时 ping 所有租户库，连续失败达阈值自动从缓存移除
+  - 新增 `DynamicTenantPlugin` Summer 插件：自动初始化、注册 `TenantManagerComponent` 供业务层依赖注入
+  - 新增 `[summer-sea-orm-ext-dynamic-tenant]` TOML 配置段：`enabled` / `health_check_interval_secs` / `health_check_failure_threshold` / `auto_remove_on_failure`
+- **租户 ID 加解密（`TenantIdCodec` trait）**：支持前端传入加密后的 tenant_id，后端解密后再使用
+  - 新增 `TenantIdCodec` trait：`decrypt()` / `encrypt()` 两个方法
+  - 新增 `set_tenant_id_codec()` / `get_tenant_id_codec()` / `clear_tenant_id_codec()` 全局注册函数
+  - `TenantLayer` 中间件集成：获取到原始 tenant_id 后，若注册了 codec 则先解密再设置上下文；解密失败时记录日志并跳过上下文设置（使用默认库）
+  - 未注册 codec 时直接使用原始 tenant_id，不影响现有行为
+- **`#[ignore_tenant]` 属性宏**：标记 async handler 函数，自动包入 `TenantIgnoreGuard`，跳过当前请求的租户 WHERE 过滤
+  - 仅对 `async fn` 有效，非 async 函数编译报错
+  - 函数返回时 guard 自动 drop，恢复租户过滤
+  - 适用于跨租户聚合查询、系统配置读取、健康检查等场景
+- **`TenantIgnoreGuard` 计数器模式**：支持嵌套使用
+  - 将 `TENANT_FILTER_DISABLED` 从 `bool` 改为 `u32` 计数器（`TENANT_FILTER_DISABLED_DEPTH`）
+  - 嵌套场景：内层 guard drop 后外层 guard 仍保持禁用状态，所有 guard 全部 drop 后才恢复过滤
+- **`TenantLayer` 中间件增强**：支持从 HTTP Header 提取租户 ID
+  - 新增 `TenantPluginConfig.tenant_id_header` 配置字段：设置后中间件从指定 Header 提取 tenant_id
+  - 优先级：HTTP Header > `TenantIdProvider` > `default_tenant_id`
+  - 全局缓存 header 名称（`set_tenant_header_name()`），避免每次请求读取配置
+- **TenantPluginConfig 新增 `enable_sql_log` 字段**：支持在 `[summer-sea-orm-ext-tenant]` 配置块中开启 SQL 日志，与 `[summer-sea-orm-ext] enable_sql_log` 等效，控制同一个全局开关
+- **`default_databases` 存储升级为 `SeaOrmExtConnection`**：内部存储改为 `Vec<SeaOrmExtConnection>`，支持 SQL 日志拦截和重试配置
+  - 新增 `set_default_databases_ext()` / `get_default_databases_ext()` / `get_available_default_database_ext()` ext 版本函数
+  - 原 `set_default_databases()` / `get_default_databases()` / `get_available_default_database()` 保持向后兼容，自动包装/解包 `SeaOrmExtConnection`
+- **组合场景测试**：新增 5 个组合测试覆盖动态租户 + ignore_tenant + 加解密的完整链路
+  - `test_combo_tenant_id_codec_with_guard_and_insert`：加解密 + TenantGuard + 数据插入
+  - `test_combo_dynamic_tenant_with_ignore_tenant_macro`：动态租户 + #[ignore_tenant] 跨租户查询
+  - `test_combo_tenant_id_codec_decrypt_failure_skips_context`：解密失败回退到默认库
+  - `test_combo_dynamic_tenant_data_isolation`：动态租户多租户数据隔离
+  - `test_combo_manual_guard_with_ignore_tenant_macro`：手动 guard + 宏 guard 嵌套共存
+
+### Changed
+
+- 版本号从 `0.0.1` 升级到 `0.0.2`
+- **`is_tenant_enforced()` 行为明确化**：仅在 `TenantMode::Table` 且未禁用过滤时返回 true，`Database` 模式下始终返回 false，避免两种隔离模式互相干扰
+
+### Removed
+
+- **删除 `apply_tenant_condition` / `apply_tenant_delete_condition`**：原 `src/tenant.rs` 中的死代码（从未被调用），功能已由宏覆盖后的 `Entity::update_many()` / `Entity::delete_many()` 统一实现
+- **删除 `Entity::find_active()`**：原宏生成的 deprecated 方法，功能已由 `Entity::find()`（自动叠加软删除过滤）完全替代
+- 清理 `src/tenant.rs` 中未使用的 `use sea_query::{DeleteStatement, UpdateStatement}` 导入
+
+---
+
 ## [0.0.1] - 2026-05-22
 
 ### Added
@@ -47,11 +102,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **ID 生成器**：`DefaultIdGenerator`、`UuidIdGenerator`、`TypedIdGenerator`、`SnowflakeIdGenerator`
 - **`anyhow` 依赖**：与 summer-sea-orm 一致
 - **`DatabaseConfig` 新增字段**：`enable_logging`、`idle_timeout_secs`
-- **多租户 WHERE 自动注入覆盖**：为 `Entity::update_many()` 和 `Entity::delete_many()` 添加宏覆盖实现，开启字段隔离多租户（`TenantMode::Table`）时自动在 WHERE 条件中叠加 `tenant_id = ?`，防止跨租户更新/删除
-  - 新增 `Entity::update_many_without_tenant()` / `Entity::delete_many_without_tenant()` 方法用于跨租户运维场景
-  - 移除 `expand_batch_update_method` / `expand_batch_delete_method` 中冗余的 `tenant_where_filter`（由覆盖后的 `update_many()` 统一注入）
-  - 标记 `apply_tenant_condition` / `apply_tenant_delete_condition` 为 `#[deprecated]`
-  - 安全保障：租户上下文未设置时 `require_tenant_id()` 返回 `Value::Int(None)`（SQL NULL），`WHERE tenant_id = NULL` 永远为 false，保证安全失败
 
 ### Changed
 

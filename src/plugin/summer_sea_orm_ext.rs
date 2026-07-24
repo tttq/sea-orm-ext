@@ -296,7 +296,7 @@ impl SnowflakeIdGenerator {
 
     pub fn with_epoch(worker_id: i64, epoch: i64) -> Self {
         assert!(
-            worker_id >= 0 && worker_id <= MAX_WORKER_ID,
+            (0..=MAX_WORKER_ID).contains(&worker_id),
             "worker_id must be in range [0, {}], got {}",
             MAX_WORKER_ID,
             worker_id

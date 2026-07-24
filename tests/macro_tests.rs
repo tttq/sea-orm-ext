@@ -564,3 +564,95 @@ async fn test_batch_operations_combo() {
     let all = Product::find_with_deleted().all(&db).await.unwrap();
     assert_eq!(all.len(), 3);
 }
+
+// ===========================================================================
+// #[ignore_tenant] 属性宏测试
+// ===========================================================================
+
+use summer_sea_orm_ext::ignore_tenant;
+
+/// 测试 #[ignore_tenant] 是否能正确编译并生成 guard
+#[tokio::test]
+#[serial]
+async fn test_ignore_tenant_macro_compiles_and_runs() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("ignore_test")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    assert!(is_tenant_enforced(), "filter should be enforced before macro call");
+
+    // 调用被 #[ignore_tenant] 标记的函数
+    let result = ignore_tenant_helper().await;
+    assert_eq!(result, 42);
+
+    // 函数返回后 guard 应已 drop，过滤应恢复
+    assert!(is_tenant_enforced(), "filter should be restored after macro call");
+}
+
+/// 被 #[ignore_tenant] 标记的辅助函数
+#[ignore_tenant]
+async fn ignore_tenant_helper() -> i32 {
+    // 在函数体内，租户过滤应被禁用
+    assert!(!is_tenant_enforced(), "inside #[ignore_tenant], filter should be disabled");
+    42
+}
+
+/// 测试 #[ignore_tenant] 应用到非 async 函数应编译失败（手动验证）
+/// 此处只测试正常路径
+#[tokio::test]
+#[serial]
+async fn test_ignore_tenant_with_db_operation() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("ignore_db")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    // 在租户 1 上下文下插入一条记录
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_product("Tenant1 Product", Some(10.0)).insert(&db).await.unwrap();
+    }
+
+    // 在租户 2 上下文下插入一条记录
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_product("Tenant2 Product", Some(20.0)).insert(&db).await.unwrap();
+    }
+
+    // 在租户 1 上下文下正常查询，应该只能看到 1 条
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let results = Product::find().all(&db).await.unwrap();
+        assert_eq!(results.len(), 1, "tenant 1 should see only its own records");
+    }
+
+    // 使用 #[ignore_tenant] 标记的函数查询，应该看到全部 2 条
+    let count = count_all_products_ignoring_tenant(&db).await;
+    assert_eq!(count, 2, "ignore_tenant should see all records across tenants");
+}
+
+/// 跨租户查询的辅助函数
+#[ignore_tenant]
+async fn count_all_products_ignoring_tenant(db: &sea_orm::DatabaseConnection) -> usize {
+    Product::find().all(db).await.unwrap().len()
+}

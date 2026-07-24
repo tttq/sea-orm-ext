@@ -6,9 +6,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
-[![crates.io](https://img.shields.io/badge/crates.io-v0.0.1-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.0.2-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
 [![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/summer-sea-orm-ext)
-[![Test Status](https://img.shields.io/badge/tests-114%20passed-green?style=for-the-badge)](#测试覆盖)
+[![Test Status](https://img.shields.io/badge/tests-154%20passed-green?style=for-the-badge)](#测试覆盖)
 
 > ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，深度集成 Summer 框架
 
@@ -23,6 +23,9 @@
 | **🔄 自动填充** | INSERT/UPDATE 时自动填充 `created_by`、`updated_by` 等审计字段 | 对应 `MetaObjectHandler` |
 | **🛡️ 软删除** | DELETE 自动转为逻辑删除，自动过滤已删除记录 | 对应 `@TableLogic` |
 | **🏢 多租户** | Table/Database 两种隔离模式，SELECT/UPDATE/DELETE 全自动租户过滤 | 对应 `@MultiTenant` |
+| **🌐 动态租户** | 主库查询租户配置 → 自动建立连接 → 缓存 + 健康检查 + 动态增删 | 无直接对应 |
+| **🔐 租户 ID 加解密** | Trait 化加解密接口，前端传密文，后端自动解密 | 无直接对应 |
+| **🚫 忽略租户** | `#[ignore_tenant]` 宏一行跳过租户过滤，跨租户聚合查询 | 对应 `@InterceptorIgnore` |
 | **⚡ Summer 集成** | 声明式配置 + 自动数据库切换，开箱即用 | 无直接对应 |
 | **📝 SQL 日志** | 打印完整 SQL（参数值注入）+ 独立参数列表，调试无忧 | 对应 `log-impl:2.x` |
 | **📄 分页查询** | Web 友好的分页扩展，自动从请求参数解析分页信息 | 对应 `PageHelper` |
@@ -37,21 +40,21 @@
 ```toml
 [dependencies]
 # 默认：启用 runtime-tokio-native-tls
-summer-sea-orm-ext = "0.0.1"
+summer-sea-orm-ext = "0.0.2"
 
 # 指定数据库驱动
-summer-sea-orm-ext = { version = "0.0.1", features = ["postgres"] }
-summer-sea-orm-ext = { version = "0.0.1", features = ["mysql"] }
-summer-sea-orm-ext = { version = "0.0.1", features = ["sqlite"] }
+summer-sea-orm-ext = { version = "0.0.2", features = ["postgres"] }
+summer-sea-orm-ext = { version = "0.0.2", features = ["mysql"] }
+summer-sea-orm-ext = { version = "0.0.2", features = ["sqlite"] }
 
 # Summer + Web + PostgreSQL + Rustls + Chrono + OpenAPI
-summer-sea-orm-ext = { version = "0.0.1", features = [
+summer-sea-orm-ext = { version = "0.0.2", features = [
     "summer", "summer-web", "postgres", "rustls",
     "with-chrono", "with-uuid", "openapi"
 ] }
 
 # 启用全部功能
-summer-sea-orm-ext = { version = "0.0.1", features = ["full"] }
+summer-sea-orm-ext = { version = "0.0.2", features = ["full"] }
 ```
 
 > 💡 **无需单独引入** `sea-orm`、`sea-query`、`summer`、`summer-web`，`summer-sea-orm-ext` 已 re-export 所有依赖。
@@ -277,6 +280,141 @@ let tenant_db = tenant_db(&default_db)?; // 自动获取当前租户的连接
 let orders = orders::Entity::find().all(&tenant_db).await?;
 ```
 
+### 5. 动态租户管理（Database 模式进阶）
+
+通过实现 `DynamicTenantConfigProvider` trait，从主库查询租户配置，框架自动建立连接、缓存、健康检查：
+
+```rust
+use summer_sea_orm_ext::dynamic_tenant::*;
+use summer_sea_orm_ext::sea_orm::DatabaseConnection;
+use summer_sea_orm_ext::SeaOrmExtError;
+
+/// 用户实现：从主库的 sys_tenant 表查询租户连接配置
+struct MyDynamicConfigProvider;
+#[async_trait::async_trait]
+impl DynamicTenantConfigProvider for MyDynamicConfigProvider {
+    async fn load_all(&self, main_db: &DatabaseConnection)
+        -> Result<Vec<TenantConnectionConfig>, sea_orm::DbErr>
+    {
+        // 用户自定义查询逻辑：SELECT * FROM sys_tenant WHERE status = 1
+        // 并映射为 TenantConnectionConfig
+        Ok(vec![
+            TenantConnectionConfig {
+                tenant_id: "tenant-a".into(),
+                url: "postgres://user:pass@localhost:5432/tenant_a".into(),
+                max_connections: Some(20),
+                ..Default::default()
+            },
+            TenantConnectionConfig {
+                tenant_id: "tenant-b".into(),
+                url: "postgres://user:pass@localhost:5432/tenant_b".into(),
+                ..Default::default()
+            },
+        ])
+    }
+
+    async fn load_one(&self, main_db: &DatabaseConnection, tenant_id: &str)
+        -> Result<Option<TenantConnectionConfig>, sea_orm::DbErr>
+    {
+        // SELECT * FROM sys_tenant WHERE tenant_id = ?
+        Ok(None)
+    }
+}
+
+// Summer 插件集成：启动时自动加载所有租户、建立连接并缓存
+// 运行时可通过 TenantManager 动态增删改租户
+```
+
+运行时动态管理租户：
+
+```rust
+use summer_sea_orm_ext::dynamic_tenant::TenantManager;
+
+// 通过依赖注入获取 TenantManager
+#[inject(component)]
+manager: TenantManager,
+
+// 新增租户：自动查主库 + 建立连接 + 缓存
+manager.add_tenant("new-tenant").await?;
+
+// 修改租户配置：自动重建连接
+manager.update_tenant("tenant-a").await?;
+
+// 移除租户：自动关闭连接 + 清理缓存
+manager.remove_tenant("tenant-a").await?;
+
+// 刷新所有缓存
+manager.refresh_cache().await?;
+```
+
+### 6. 租户 ID 加解密
+
+通过实现 `TenantIdCodec` trait，前端传入加密后的 tenant_id，后端自动解密：
+
+```rust
+use summer_sea_orm_ext::{TenantIdCodec, set_tenant_id_codec};
+use summer_sea_orm_ext::sea_query::Value;
+use std::sync::Arc;
+
+/// 自定义加解密实现（示例：AES、JWT、Base64 等）
+struct AesCodec;
+impl TenantIdCodec for AesCodec {
+    fn decrypt(&self, encrypted: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        // 解密逻辑：AES 解密 → 还原原始 tenant_id
+        let raw = aes_decrypt(encrypted)?;
+        Ok(Value::String(Some(raw)))
+    }
+
+    fn encrypt(&self, tenant_id: &Value) -> Result<String, Box<dyn std::error::Error>> {
+        // 加密逻辑：用于向前端返回加密后的 tenant_id
+        if let Value::String(Some(s)) = tenant_id {
+            Ok(aes_encrypt(s)?)
+        } else {
+            Err("expected string tenant_id".into())
+        }
+    }
+}
+
+// 全局注册：未注册时不加解密，直接使用原始 tenant_id
+set_tenant_id_codec(Arc::new(AesCodec));
+
+// TenantLayer 中间件会自动调用 decrypt()：
+// 1. 从 Header 获取加密的 tenant_id
+// 2. 调用 codec.decrypt() 解密
+// 3. 解密成功 → 设置租户上下文
+// 4. 解密失败 → 记录日志 + 跳过上下文设置（使用默认库）
+```
+
+### 7. `#[ignore_tenant]` 属性宏
+
+标记 async handler，自动跳过租户 WHERE 过滤，适用于跨租户聚合查询、系统配置读取等场景：
+
+```rust
+use summer_sea_orm_ext::ignore_tenant;
+
+/// 跨租户统计：所有租户的订单总数
+#[ignore_tenant]
+async fn count_all_orders(db: &DbConn) -> u64 {
+    // 函数体内租户过滤已禁用
+    // SQL: SELECT COUNT(*) FROM orders WHERE is_deleted = 0
+    // （不带 tenant_id 条件）
+    orders::Entity::find().count(db).await.unwrap()
+}
+
+/// 系统配置读取：跨租户共享的配置表
+#[ignore_tenant]
+async fn get_system_config(db: &DbConn, key: &str) -> Option<String> {
+    sys_config::Entity::find()
+        .filter(sys_config::Column::Key.eq(key))
+        .one(db).await.unwrap()
+        .map(|c| c.value)
+}
+
+// ⚠️ 仅对 async fn 有效，非 async 函数编译报错
+// ⚠️ 函数返回时自动恢复租户过滤
+// ⚠️ 支持嵌套：手动 TenantIgnoreGuard 与宏 guard 可共存
+```
+
 ---
 
 ## 🏗️ Summer 框架集成
@@ -294,12 +432,15 @@ async fn main() -> anyhow::Result<()> {
 
     // 注册插件（SeaOrmPlugin 整合数据库连接 + SQL 日志 + 字段填充 + ID 生成）
     app.add_plugin(SeaOrmPlugin::new())
-        .add_plugin(TenantPlugin::new())
+       .add_plugin(TenantPlugin::new())
+       .add_plugin(DynamicTenantPlugin)  // 动态租户管理（Database 模式）
 
         // 注册组件（提供自定义逻辑）
         .add_component(TenantIdProviderComponent::new(Arc::new(MyTenantIdProvider)))
         .add_component(TenantDatabaseProviderComponent::new(Arc::new(MyTenantDatabaseProvider)))
         .add_component(FieldFillHandlerComponent::new(Arc::new(MyFieldFillHandler)))
+        // 动态租户：用户实现的配置查询 provider
+        .add_component(DynamicTenantConfigProviderComponent::new(Arc::new(MyDynamicConfigProvider)))
 
         .run().await?;
 
@@ -318,7 +459,11 @@ async fn main() -> anyhow::Result<()> {
 
 ### 自动数据库切换（summer-web）
 
-`TenantPlugin` 自动注册中间件，每个请求自动设置租户上下文：
+`TenantPlugin` 自动注册 `TenantLayer` 中间件，每个请求自动设置租户上下文：
+
+**租户 ID 提取优先级**：HTTP Header > `TenantIdProvider` > `default_tenant_id`
+
+**加解密集成**：若注册了 `TenantIdCodec`，中间件会先解密从 Header 获取的 tenant_id，解密失败时记录日志并回退到默认库。
 
 ```rust
 // Handler 中使用 TenantDb extractor，自动获取正确的数据库连接
@@ -331,6 +476,14 @@ async fn list_orders(TenantDb(db): TenantDb) -> Result<Json<Vec<Order>>, StatusC
     Ok(Json(orders))
 }
 ```
+
+### DynamicTenantPlugin（动态租户管理插件）
+
+仅在 `TenantMode::Database` 下生效。启动时从主库加载所有租户配置 → 建立连接 → 缓存。运行时通过 `TenantManager` 动态增删改租户，后台定时健康检查。
+
+- 自动初始化：插件 `build()` 时调用 `TenantManager::initialize()` 加载所有租户
+- 后台健康检查（`runtime-tokio` feature）：定时 ping 所有租户库，连续失败达阈值自动从缓存移除
+- 组件注册：自动注册 `TenantManagerComponent` 供业务层依赖注入
 
 ### 配置示例
 
@@ -349,10 +502,24 @@ default_user = "system"
 # 多租户配置
 [summer-sea-orm-ext-tenant]
 enabled = true
-mode = "database"
-database_source = "config"
+mode = "database"             # "table" 或 "database"
+database_source = "config"    # "config"（静态 TOML）或留空配合 DynamicTenantPlugin
 default_tenant_id = "1"
+tenant_id_header = "X-Tenant-Id"  # 从 HTTP Header 提取 tenant_id（可选）
+enable_sql_log = true         # 开启 SQL 日志（完整 SQL + 参数值注入）
+max_retries = 3               # 连接失败重试次数（指数退避）
+ignored_tables = ["sys_dict", "sys_config"]  # 忽略租户过滤的表
 
+# 默认数据库 fallback 链（主库故障时按顺序尝试）
+[[summer-sea-orm-ext-tenant.default_databases]]
+url = "postgres://user:pass@localhost:5432/default_db"
+max_connections = 50
+
+[[summer-sea-orm-ext-tenant.default_databases]]
+url = "postgres://user:pass@localhost:5432/default_db_fallback"
+max_connections = 20
+
+# 静态租户数据库配置（database_source = "config" 时使用）
 [[summer-sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000001"
 [summer-sea-orm-ext-tenant.databases.database]
@@ -364,6 +531,13 @@ tenant_id = "1876543210000000002"
 [summer-sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_2"
 max_connections = 20
+
+# 动态租户管理配置（Database 模式 + DynamicTenantPlugin 时生效）
+[summer-sea-orm-ext-dynamic-tenant]
+enabled = true
+health_check_interval_secs = 60     # 健康检查间隔
+health_check_failure_threshold = 3  # 连续失败阈值，达到后自动移除
+auto_remove_on_failure = true       # 是否自动移除失败的租户连接
 ```
 
 ### TenantIdProvider 实现
@@ -492,12 +666,25 @@ max_page_size = 2000
 
 ## 🎯 派生宏参考
 
+### 派生宏（`#[derive(...)]`）
+
 | 宏 | 功能 | 生成的字段 |
 |----|------|-----------|
 | `DeriveAutoFill` | 自动填充 | `created_by`, `updated_by` 等 |
 | `DeriveSoftDelete` | 软删除 | `delete_many_soft()`, `find_with_deleted()` 等 |
 | `DeriveTenant` | 多租户 | `find_without_tenant()`, 自动 `WHERE tenant_id=?` |
 | `DeriveAutoFillSoftDeleteTenant` | 全功能 | 以上全部 |
+
+### 属性宏（`#[...]`）
+
+| 宏 | 作用目标 | 功能 |
+|----|---------|------|
+| `#[ignore_tenant]` | `async fn` | 包入 `TenantIgnoreGuard`，函数体内跳过租户 WHERE 过滤；返回时自动恢复 |
+| `#[summer_sea_orm_ext(insert)]` | 字段 | INSERT 时自动填充 |
+| `#[summer_sea_orm_ext(update)]` | 字段 | UPDATE 时自动填充 |
+| `#[summer_sea_orm_ext(insert_update)]` | 字段 | INSERT 和 UPDATE 时都填充 |
+| `#[summer_sea_orm_ext(TENANT)]` | 字段 | 标记为租户隔离字段 |
+| `#[soft_delete(default = 0, del = 1)]` | 字段 | 标记为软删除字段 |
 
 ### 生成的 CRUD 方法
 
@@ -550,12 +737,12 @@ summer_sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 | 测试套件 | 测试数 | 覆盖范围 |
 |---------|--------|----------|
 | `crud_tests.rs` | 13 | 单条 CRUD、自动填充、字符串主键、UUID/Snowflake ID |
-| `macro_tests.rs` | 5 | 批量插入/更新/软删除 |
-| `integration_tests.rs` | 32 | 多租户隔离、TenantIdProvider、SQL 日志、SeaOrmExtConnection、update_many/delete_many 租户过滤 |
-| `unit_tests.rs` | 61 | 租户过滤、软删除、守卫模式、ConnectionStore |
-| `lib.rs` | 3 | 分页逻辑 |
+| `macro_tests.rs` | 17 | 批量插入/更新/软删除、`#[ignore_tenant]` 宏功能测试 |
+| `integration_tests.rs` | 34 | 多租户隔离（Table/Database 双模式）、TenantIdProvider、SQL 日志、SeaOrmExtConnection、update_many/delete_many 租户过滤 |
+| `unit_tests.rs` | 79 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试 |
+| `lib.rs` (内嵌) | 11 | 分页逻辑、TOML 配置加载、基础工具函数 |
 
-**总计：114 个测试，100% 通过**
+**总计：154 个测试，100% 通过**
 
 ```bash
 cargo test --workspace --features full

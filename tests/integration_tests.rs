@@ -1179,3 +1179,129 @@ async fn test_update_many_tenant_not_set_safe_fail() {
     let all = Order::find_without_tenant().all(&db).await.unwrap();
     assert_eq!(all.len(), 2, "records should be untouched");
 }
+
+// ===========================================================================
+// Database 隔离模式下 update_many() / delete_many() 行为验证
+// ===========================================================================
+//
+// 验证在 Database 隔离模式下（TenantMode::Database），update_many() 和
+// delete_many() **不会**叠加 WHERE tenant_id = ? 条件。
+//
+// 原因：Database 模式下数据已物理隔离到不同数据库，通过 tenant_db() 获取
+// 租户专用连接，不需要在 SQL 层面叠加 WHERE 条件。
+// is_tenant_enforced() 在 Database 模式下返回 false，覆盖方法退化为 sea-orm 原生行为。
+
+#[tokio::test]
+#[serial]
+async fn test_database_mode_update_many_no_tenant_where() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("db_mode_upd")));
+
+    // 设置 Database 模式
+    let store = Arc::new(HashMapConnectionStore::new());
+    let db1 = create_sqlite_db().await;
+    setup_order_table(&db1).await;
+    store.insert(Value::String(Some("1".to_string())), db1).unwrap();
+    set_tenant_store(store);
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Database,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    // 以租户 1 身份获取专用数据库连接
+    let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+    let db = get_tenant_database().unwrap().unwrap();
+
+    // 在租户 1 的专用数据库中插入 3 条记录
+    // Database 模式下 is_tenant_enforced() 为 false，insert 不会自动注入 tenant_id
+    // 这里手动设置不同的 tenant_id 来验证 update_many 不会按 tenant_id 过滤
+    let mut am1 = new_order("DB1-A", 1);
+    am1.tenant_id = Set(Some("1".to_string()));
+    am1.insert(&db).await.unwrap();
+
+    let mut am2 = new_order("DB1-B", 2);
+    am2.tenant_id = Set(Some("2".to_string())); // 手动设置为不同租户
+    am2.insert(&db).await.unwrap();
+
+    let mut am3 = new_order("DB1-C", 3);
+    am3.tenant_id = Set(Some("3".to_string())); // 手动设置为不同租户
+    am3.insert(&db).await.unwrap();
+
+    // 执行 update_many()，将所有订单数量改为 99
+    // Database 模式下不应叠加 WHERE tenant_id = '1'，应更新所有 3 条记录
+    let result = Order::update_many()
+        .col_expr(OrderColumn::Quantity, sea_query::Expr::value(99))
+        .exec(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.rows_affected, 3,
+        "Database 模式下 update_many() 不应叠加 tenant WHERE，应更新所有 3 条记录"
+    );
+
+    // 验证所有记录都被更新（无论 tenant_id 是什么）
+    let all = Order::find_without_tenant().all(&db).await.unwrap();
+    assert_eq!(all.len(), 3);
+    for r in &all {
+        assert_eq!(r.quantity, 99, "Database 模式下所有记录都应被更新");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_database_mode_delete_many_no_tenant_where() {
+    init_logging();
+    reset_global_state();
+
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("db_mode_del")));
+
+    // 设置 Database 模式
+    let store = Arc::new(HashMapConnectionStore::new());
+    let db1 = create_sqlite_db().await;
+    setup_order_table(&db1).await;
+    store.insert(Value::String(Some("1".to_string())), db1).unwrap();
+    set_tenant_store(store);
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Database,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    // 以租户 1 身份获取专用数据库连接
+    let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+    let db = get_tenant_database().unwrap().unwrap();
+
+    // 在租户 1 的专用数据库中插入 3 条记录（手动设置不同 tenant_id）
+    let mut am1 = new_order("DB1-A", 1);
+    am1.tenant_id = Set(Some("1".to_string()));
+    am1.insert(&db).await.unwrap();
+
+    let mut am2 = new_order("DB1-B", 2);
+    am2.tenant_id = Set(Some("2".to_string()));
+    am2.insert(&db).await.unwrap();
+
+    let mut am3 = new_order("DB1-C", 3);
+    am3.tenant_id = Set(Some("3".to_string()));
+    am3.insert(&db).await.unwrap();
+
+    // 执行 delete_many()，删除所有记录
+    // Database 模式下不应叠加 WHERE tenant_id = '1'，应删除所有 3 条记录
+    let result = Order::delete_many().exec(&db).await.unwrap();
+    assert_eq!(
+        result.rows_affected, 3,
+        "Database 模式下 delete_many() 不应叠加 tenant WHERE，应删除所有 3 条记录"
+    );
+
+    // 验证所有记录都被删除
+    let all = Order::find_without_tenant().all(&db).await.unwrap();
+    assert_eq!(all.len(), 0, "Database 模式下所有记录都应被删除");
+}
