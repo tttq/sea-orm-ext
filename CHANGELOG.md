@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.3] - 2026-07-26
+
+### Added
+
+- **`SeaOrmExtConnection` 自动路由**：业务层零样板代码，框架在 SQL 执行时自动路由到正确的数据库连接
+  - 新增 `effective_connection()` 方法：根据当前租户上下文自动选择底层 `DatabaseConnection`
+  - 改写 `ConnectionTrait` / `StreamTrait` / `TransactionTrait` 实现，所有 SQL 操作自动走 `effective_connection()`
+  - 行为矩阵：
+    - `TenantIgnoreGuard` 生效 → 主库（用于查询全局表，如 `auth_sys_tenant`）
+    - database 模式 + 已登录 → 租户专属库（不注入 WHERE tenant_id）
+    - table 模式 / 未登录 → 主库 + WHERE tenant_id 注入
+- **`TenantIdProvider::get_tenant_mode()` 运行时租户模式**：支持 JWT token 携带的 `tenantMode` 字段，运行时动态决定隔离模式
+  - 优先级：`TenantIdProvider.get_tenant_mode()` > 全局 TOML 配置 `mode`
+  - 默认返回 `None`，已有实现无需修改，完全向后兼容
+  - 适用于混合模式项目：全局 `table` + 部分 `database` 租户
+- **`get_effective_tenant_mode()` 函数**：统一获取当前生效的租户模式
+  - provider 返回无效字符串时记录警告并回退到全局配置
+  - 供 `is_tenant_enforced()` 和 `SeaOrmExtConnection::effective_connection()` 共同使用
+- **`get_tenant_database_for_current()` 函数**：自动路由辅助函数
+  - 检查 `TenantIgnoreGuard` → 检查 effective mode → 查询租户连接
+  - 供 `SeaOrmExtConnection::effective_connection()` 内部调用
+- **`get_database_for_tenant_unchecked()` 函数**：不检查 mode 的租户连接查询（内部使用）
+  - 与 `get_database_for_tenant()` 区别：不检查全局 mode，仅按 tenant_id 查找连接缓存
+  - 适用场景：运行时 provider 指定为 database 模式但全局配置为 table 模式时仍能正确路由
+- **6 个自动路由测试**：覆盖 `get_effective_tenant_mode` 优先级、`is_tenant_enforced` 行为、`SeaOrmExtConnection` 自动路由、`TenantIgnoreGuard` 走主库、table 模式走主库等场景
+
+### Changed
+
+- 版本号从 `0.0.2` 升级到 `0.0.3`
+- **`is_tenant_enforced()` 重写**：基于 `get_effective_tenant_mode()` 判断，支持运行时 provider 模式
+  - database 模式租户的查询不注入 WHERE tenant_id（租户库已物理隔离）
+  - 无 provider 时回退原逻辑（按全局配置）
+- **`StreamTrait::stream_raw` 限制说明**：流式查询不自动路由到租户库（生命周期约束），需手动用 `tenant_db()` 获取连接
+- **README 文档更新**：
+  - 顶部 badge 版本号 0.0.2 → 0.0.3，测试数 154 → 160
+  - 特性对比表新增"🔌 自动路由"项
+  - 新增 4.1 章节"自动路由（v0.0.3+ 新增）"详细说明行为矩阵和混合模式最佳实践
+  - 多租户场景示例中区分"自动路由"与"手动切换"两种方式
+
+### Compatibility
+
+- **完全向后兼容**：
+  - `TenantIdProvider` trait 新增方法有默认实现 `None`
+  - `is_tenant_enforced()` 在 provider 返回 `None` 时回退原逻辑
+  - `SeaOrmExtConnection::effective_connection()` 在非租户场景或 table 模式下返回 `self.inner`，行为与原来一致
+  - 手动切换模式（`tenant_db()` / `TenantIgnoreGuard`）保留不变
+
+---
+
 ## [0.0.2] - 2026-07-22
 
 ### Added

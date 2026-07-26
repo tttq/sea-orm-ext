@@ -6,11 +6,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
-[![crates.io](https://img.shields.io/badge/crates.io-v0.0.2-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.0.3-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
 [![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/summer-sea-orm-ext)
-[![Test Status](https://img.shields.io/badge/tests-154%20passed-green?style=for-the-badge)](#测试覆盖)
+[![Test Status](https://img.shields.io/badge/tests-160%20passed-green?style=for-the-badge)](#测试覆盖)
 
-> ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，深度集成 Summer 框架
+> ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，业务层零样板代码，深度集成 Summer 框架
 
 </div>
 
@@ -23,6 +23,7 @@
 | **🔄 自动填充** | INSERT/UPDATE 时自动填充 `created_by`、`updated_by` 等审计字段 | 对应 `MetaObjectHandler` |
 | **🛡️ 软删除** | DELETE 自动转为逻辑删除，自动过滤已删除记录 | 对应 `@TableLogic` |
 | **🏢 多租户** | Table/Database 两种隔离模式，SELECT/UPDATE/DELETE 全自动租户过滤 | 对应 `@MultiTenant` |
+| **🔌 自动路由** | `SeaOrmExtConnection` 在 SQL 执行时自动路由到租户库，业务层零样板代码 | 无直接对应 |
 | **🌐 动态租户** | 主库查询租户配置 → 自动建立连接 → 缓存 + 健康检查 + 动态增删 | 无直接对应 |
 | **🔐 租户 ID 加解密** | Trait 化加解密接口，前端传密文，后端自动解密 | 无直接对应 |
 | **🚫 忽略租户** | `#[ignore_tenant]` 宏一行跳过租户过滤，跨租户聚合查询 | 对应 `@InterceptorIgnore` |
@@ -40,21 +41,21 @@
 ```toml
 [dependencies]
 # 默认：启用 runtime-tokio-native-tls
-summer-sea-orm-ext = "0.0.2"
+summer-sea-orm-ext = "0.0.3"
 
 # 指定数据库驱动
-summer-sea-orm-ext = { version = "0.0.2", features = ["postgres"] }
-summer-sea-orm-ext = { version = "0.0.2", features = ["mysql"] }
-summer-sea-orm-ext = { version = "0.0.2", features = ["sqlite"] }
+summer-sea-orm-ext = { version = "0.0.3", features = ["postgres"] }
+summer-sea-orm-ext = { version = "0.0.3", features = ["mysql"] }
+summer-sea-orm-ext = { version = "0.0.3", features = ["sqlite"] }
 
 # Summer + Web + PostgreSQL + Rustls + Chrono + OpenAPI
-summer-sea-orm-ext = { version = "0.0.2", features = [
+summer-sea-orm-ext = { version = "0.0.3", features = [
     "summer", "summer-web", "postgres", "rustls",
     "with-chrono", "with-uuid", "openapi"
 ] }
 
 # 启用全部功能
-summer-sea-orm-ext = { version = "0.0.2", features = ["full"] }
+summer-sea-orm-ext = { version = "0.0.3", features = ["full"] }
 ```
 
 > 💡 **无需单独引入** `sea-orm`、`sea-query`、`summer`、`summer-web`，`summer-sea-orm-ext` 已 re-export 所有依赖。
@@ -275,10 +276,50 @@ let result = am.delete(&db).await?; // ✅ 软删除成功
         .one(&db).await?;
 }
 
-// 🔷 Database 模式：自动切换数据库连接
-let tenant_db = tenant_db(&default_db)?; // 自动获取当前租户的连接
+// 🔷 Database 模式（v0.0.3+ 自动路由）：直接用 self.db，框架自动切换到租户库
+// 业务层零样板代码，无需 get_effective_db / 手动选库 / 管理 guard
+let orders = orders::Entity::find().all(&db).await?;
+// 框架根据 TenantIdProvider.get_tenant_mode() 自动路由：
+//   - "database" 模式 + 当前 tenant_id → 租户专属库（不注入 WHERE tenant_id）
+//   - "table" 模式                     → 主库 + WHERE tenant_id = ?
+//   - TenantIgnoreGuard 生效           → 主库（用于查询全局表）
+
+// 🔷 Database 模式（手动切换，保留向后兼容）
+let tenant_db = tenant_db(&default_db)?; // 显式获取当前租户的连接
 let orders = orders::Entity::find().all(&tenant_db).await?;
 ```
+
+### 4.1 自动路由（v0.0.3+ 新增）
+
+`SeaOrmExtConnection` 在执行 SQL 时自动调用 `effective_connection()` 路由到正确的数据库：
+
+| 场景 | provider.get_tenant_mode() | 行为 |
+|------|---------------------------|------|
+| database 模式租户已登录 | `Some("database")` | 路由到租户专属库，不注入 WHERE |
+| table 模式租户已登录 | `Some("table")` | 走主库 + 注入 WHERE tenant_id = ? |
+| 未登录（登录/注册） | `None` | 走主库（手动用 `tenant_db()` 选库） |
+| `TenantIgnoreGuard` 生效 | 任意 | 走主库（查询全局表） |
+| 未实现 `get_tenant_mode()` | `None`（默认） | 按全局配置 |
+
+**运行时优先级**：`TenantIdProvider.get_tenant_mode()` > 全局 TOML 配置 `mode`
+
+```rust
+// 应用层只需实现 get_tenant_mode()，从 JWT token 返回当前租户的模式
+struct MyTenantIdProvider;
+impl TenantIdProvider for MyTenantIdProvider {
+    fn get_tenant_id(&self) -> Option<Value> {
+        // 从请求上下文获取 tenant_id
+    }
+
+    fn get_tenant_mode(&self) -> Option<String> {
+        // 从 JWT token extra_data 读取 tenantMode 字段
+        // 全局配置为 table，但 database 模式租户的请求会自动路由到租户库
+        Some("database".to_string())
+    }
+}
+```
+
+> 💡 **混合模式项目最佳实践**：全局配置 `mode = "table"`，在 `TenantIdProvider.get_tenant_mode()` 中按当前用户返回 `"database"` 或 `"table"`，框架会自动处理 WHERE 注入开关和数据库路由，业务层完全无感知。
 
 ### 5. 动态租户管理（Database 模式进阶）
 
@@ -739,10 +780,10 @@ summer_sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 | `crud_tests.rs` | 13 | 单条 CRUD、自动填充、字符串主键、UUID/Snowflake ID |
 | `macro_tests.rs` | 17 | 批量插入/更新/软删除、`#[ignore_tenant]` 宏功能测试 |
 | `integration_tests.rs` | 34 | 多租户隔离（Table/Database 双模式）、TenantIdProvider、SQL 日志、SeaOrmExtConnection、update_many/delete_many 租户过滤 |
-| `unit_tests.rs` | 79 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试 |
+| `unit_tests.rs` | 85 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试、**自动路由（v0.0.3+）** |
 | `lib.rs` (内嵌) | 11 | 分页逻辑、TOML 配置加载、基础工具函数 |
 
-**总计：154 个测试，100% 通过**
+**总计：160 个测试，100% 通过**
 
 ```bash
 cargo test --workspace --features full

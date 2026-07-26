@@ -1853,3 +1853,313 @@ async fn nested_ignore_tenant_helper() -> i32 {
     assert!(!is_tenant_enforced(), "nested #[ignore_tenant] should keep filter disabled");
     100
 }
+
+// ===========================================================================
+// SeaOrmExtConnection 自动路由测试（修改方案 v2）
+// ===========================================================================
+
+/// 测试 1：get_effective_tenant_mode() 优先级
+///
+/// provider.get_tenant_mode() > 全局配置 mode
+#[test]
+#[serial]
+fn test_get_effective_tenant_mode_priority() {
+    reset_global_state();
+
+    // 先获取 provider（会清除 tenant_config，需在之后重新设置）
+    let provider = reset_global_state_with_provider();
+
+    // 全局配置为 table
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    // provider 未设置 mode → 回退全局配置 table
+    assert_eq!(get_effective_tenant_mode(), Some(TenantMode::Table));
+
+    // provider 设置 mode = database → 优先使用 provider
+    provider.set(Value::String(Some("1".to_string())));
+    provider.set_mode(Some("database"));
+    assert_eq!(get_effective_tenant_mode(), Some(TenantMode::Database));
+
+    // provider 设置 mode = table
+    provider.set_mode(Some("table"));
+    assert_eq!(get_effective_tenant_mode(), Some(TenantMode::Table));
+
+    // provider 设置无效 mode → 回退全局配置
+    provider.set_mode(Some("invalid"));
+    assert_eq!(get_effective_tenant_mode(), Some(TenantMode::Table));
+
+    // provider 设置 None → 回退全局配置
+    provider.set_mode(None);
+    assert_eq!(get_effective_tenant_mode(), Some(TenantMode::Table));
+}
+
+/// 测试 2：is_tenant_enforced() 在 database 模式下返回 false（不注入 WHERE）
+#[test]
+#[serial]
+fn test_is_tenant_enforced_with_runtime_database_mode() {
+    reset_global_state();
+
+    // 先获取 provider（会清除 tenant_config，需在之后重新设置）
+    let provider = reset_global_state_with_provider();
+
+    // 全局配置为 table，但 provider 指定当前租户为 database 模式
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    provider.set(Value::String(Some("1".to_string())));
+
+    // provider mode = database → 不注入 WHERE
+    provider.set_mode(Some("database"));
+    assert!(!is_tenant_enforced(), "database mode should not enforce WHERE injection");
+
+    // provider mode = table → 注入 WHERE
+    provider.set_mode(Some("table"));
+    assert!(is_tenant_enforced(), "table mode should enforce WHERE injection");
+
+    // TenantIgnoreGuard 生效时 → 不注入 WHERE
+    provider.set_mode(Some("table"));
+    let _guard = TenantIgnoreGuard::new();
+    assert!(!is_tenant_enforced(), "TenantIgnoreGuard should disable enforcement");
+}
+
+/// 测试 3：SeaOrmExtConnection 在 database 模式下自动路由到租户库
+///
+/// 验证：业务层直接用 self.db，框架自动路由到租户专属库
+#[tokio::test]
+#[serial]
+async fn test_sea_orm_ext_connection_auto_routing_database_mode() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("auto_route")));
+
+    // 全局配置为 table（模拟混合模式项目）
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    // 创建主库（SeaOrmExtConnection 包装）
+    let main_db = create_sqlite_db().await;
+    setup_product_table(&main_db).await;
+    // 主库插入一条数据（用 TenantIgnoreGuard 跳过 tenant_id 注入，便于测试 setup）
+    {
+        let _guard = TenantIgnoreGuard::new();
+        new_product("Main-Product", Some(100.0)).insert(&main_db).await.unwrap();
+    }
+
+    // 创建租户库（独立的 sqlite::memory:）
+    let tenant_db_conn = create_sqlite_db().await;
+    setup_product_table(&tenant_db_conn).await;
+    // 租户库插入一条数据
+    {
+        let _guard = TenantIgnoreGuard::new();
+        new_product("Tenant-Product", Some(200.0)).insert(&tenant_db_conn).await.unwrap();
+    }
+
+    // 注册租户连接到 ConnectionStore（需在 reset_global_state_with_provider 之前）
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    store.insert_ext(
+        Value::String(Some("tenant-1".to_string())),
+        SeaOrmExtConnection::new(tenant_db_conn.clone()),
+    ).unwrap();
+
+    // 设置 provider：当前租户为 tenant-1，模式为 database
+    // 注意：reset_global_state_with_provider 会清除 tenant_store，需在之后重新设置
+    let provider = reset_global_state_with_provider();
+    // 重新设置 tenant_config（reset_global_state_with_provider 会清除）
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+    // 重新注册 tenant_store
+    set_tenant_store(store);
+    provider.set(Value::String(Some("tenant-1".to_string())));
+    provider.set_mode(Some("database"));
+
+    // 关键验证：用 SeaOrmExtConnection（包装主库）查询，应自动路由到租户库
+    let ext_conn = SeaOrmExtConnection::new(main_db.clone());
+
+    // 自动路由到租户库 → 应看到 "Tenant-Product"，看不到 "Main-Product"
+    let results = Product::find().all(&ext_conn).await.unwrap();
+    assert_eq!(results.len(), 1, "should route to tenant db and see only tenant data");
+    assert_eq!(results[0].name, "Tenant-Product");
+
+    // 验证 is_tenant_enforced() 返回 false（database 模式不注入 WHERE）
+    assert!(!is_tenant_enforced(), "database mode should not inject WHERE tenant_id");
+}
+
+/// 测试 4：TenantIgnoreGuard 让 SeaOrmExtConnection 走主库
+///
+/// 验证：查询全局表时用 TenantIgnoreGuard 临时走主库
+#[tokio::test]
+#[serial]
+async fn test_sea_orm_ext_connection_ignore_guard_uses_main_db() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("guard_test")));
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    // 主库有 2 条数据（用 TenantIgnoreGuard 跳过 tenant_id 注入）
+    let main_db = create_sqlite_db().await;
+    setup_product_table(&main_db).await;
+    {
+        let _guard = TenantIgnoreGuard::new();
+        new_product("Main-A", Some(10.0)).insert(&main_db).await.unwrap();
+        new_product("Main-B", Some(20.0)).insert(&main_db).await.unwrap();
+    }
+
+    // 租户库有 1 条数据
+    let tenant_db_conn = create_sqlite_db().await;
+    setup_product_table(&tenant_db_conn).await;
+    {
+        let _guard = TenantIgnoreGuard::new();
+        new_product("Tenant-A", Some(100.0)).insert(&tenant_db_conn).await.unwrap();
+    }
+
+    // 注册租户连接到 ConnectionStore（需在 reset_global_state_with_provider 之前）
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    store.insert_ext(
+        Value::String(Some("tenant-1".to_string())),
+        SeaOrmExtConnection::new(tenant_db_conn.clone()),
+    ).unwrap();
+
+    // 注意：reset_global_state_with_provider 会清除 tenant_store 和 tenant_config
+    let provider = reset_global_state_with_provider();
+    // 重新设置 tenant_config
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+    // 重新注册 tenant_store
+    set_tenant_store(store);
+    provider.set(Value::String(Some("tenant-1".to_string())));
+    provider.set_mode(Some("database"));
+
+    let ext_conn = SeaOrmExtConnection::new(main_db.clone());
+
+    // 不带 guard：自动路由到租户库，看到 1 条
+    let tenant_results = Product::find().all(&ext_conn).await.unwrap();
+    assert_eq!(tenant_results.len(), 1, "without guard, should route to tenant db");
+    assert_eq!(tenant_results[0].name, "Tenant-A");
+
+    // 带 guard：走主库，看到 2 条
+    {
+        let _guard = TenantIgnoreGuard::new();
+        let main_results = Product::find().all(&ext_conn).await.unwrap();
+        assert_eq!(main_results.len(), 2, "with guard, should use main db");
+        assert!(main_results.iter().any(|r| r.name == "Main-A"));
+        assert!(main_results.iter().any(|r| r.name == "Main-B"));
+    }
+
+    // guard 释放后：恢复自动路由到租户库
+    let tenant_results_after = Product::find().all(&ext_conn).await.unwrap();
+    assert_eq!(tenant_results_after.len(), 1, "after guard drop, should route to tenant db again");
+    assert_eq!(tenant_results_after[0].name, "Tenant-A");
+}
+
+/// 测试 5：table 模式下 SeaOrmExtConnection 走主库（不路由）
+#[tokio::test]
+#[serial]
+async fn test_sea_orm_ext_connection_table_mode_uses_main_db() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("table_mode")));
+
+    // 先获取 provider（会清除 tenant_config，需在之后重新设置）
+    let provider = reset_global_state_with_provider();
+
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    let main_db = create_sqlite_db().await;
+    setup_product_table(&main_db).await;
+
+    // 插入不同租户的数据（TenantGuard 设置当前租户上下文，宏会自动填充 tenant_id）
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        new_product("T1-Product", Some(10.0)).insert(&main_db).await.unwrap();
+    }
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        new_product("T2-Product", Some(20.0)).insert(&main_db).await.unwrap();
+    }
+
+    let ext_conn = SeaOrmExtConnection::new(main_db.clone());
+
+    // table 模式 + 租户 1 上下文 → 走主库 + WHERE tenant_id = '1'
+    provider.set(Value::String(Some("1".to_string())));
+    provider.set_mode(Some("table"));
+
+    let results = Product::find().all(&ext_conn).await.unwrap();
+    assert_eq!(results.len(), 1, "table mode should filter by tenant_id");
+    assert_eq!(results[0].name, "T1-Product");
+}
+
+/// 测试 6：get_tenant_database_for_current() 在不同场景下的返回值
+#[test]
+#[serial]
+fn test_get_tenant_database_for_current_scenarios() {
+    reset_global_state();
+
+    // 场景 1：租户未启用 → None
+    assert!(get_tenant_database_for_current().unwrap().is_none());
+
+    // 场景 2：启用 table 模式 → None（不路由）
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+    assert!(get_tenant_database_for_current().unwrap().is_none());
+
+    // 场景 3：TenantIgnoreGuard 生效 → None（走主库）
+    // 注意：reset_global_state_with_provider 会清除 tenant_config，需在之后重新设置
+    let provider = reset_global_state_with_provider();
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+    provider.set(Value::String(Some("1".to_string())));
+    provider.set_mode(Some("database"));
+    let _guard = TenantIgnoreGuard::new();
+    assert!(get_tenant_database_for_current().unwrap().is_none());
+
+    // 场景 4：database 模式 + 无租户库 → None（回退主库）
+    drop(_guard);
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    set_tenant_store(store);
+    // store 为空，查不到连接 → 返回 None（fallback）
+    let result = get_tenant_database_for_current().unwrap();
+    assert!(result.is_none(), "empty store should return None (fallback to main db)");
+}

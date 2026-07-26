@@ -92,6 +92,37 @@ impl SeaOrmExtConnection {
             }
         }
     }
+
+    /// 获取当前请求生效的底层 DatabaseConnection。
+    ///
+    /// **自动路由逻辑**（业务层无需手动选库）：
+    /// - `TenantIgnoreGuard` 生效时：返回主库（`self.inner`），用于查询全局表
+    /// - database 模式 + 当前 tenant_id：返回租户专属 db
+    /// - table 模式 或 未登录：返回主库（`self.inner`）
+    ///
+    /// 优先级：运行时 provider mode > 全局配置 mode。
+    ///
+    /// `SeaOrmExtConnection` 在执行每次 SQL 前自动调用此方法，
+    /// 业务层直接用注入的 `self.db` 即可，无需 `get_effective_db` / guard / 手动选库。
+    ///
+    /// # 行为矩阵
+    ///
+    /// | 场景 | 返回值 | 说明 |
+    /// |------|--------|------|
+    /// | `TenantIgnoreGuard` 生效 | `self.inner` | 查询全局表时临时走主库 |
+    /// | database 模式 + 已登录 | 租户专属 db | 自动路由到租户库 |
+    /// | table 模式 | `self.inner` | 主库 + WHERE tenant_id 注入 |
+    /// | 未登录 / 未启用租户 | `self.inner` | 主库 |
+    fn effective_connection(&self) -> DatabaseConnection {
+        // TenantIgnoreGuard 生效时走主库（用于查询全局表，如 auth_sys_tenant）
+        if crate::is_tenant_filter_disabled() {
+            return self.inner.clone();
+        }
+        match crate::get_tenant_database_for_current() {
+            Ok(Some(db)) => db,
+            _ => self.inner.clone(),
+        }
+    }
 }
 
 impl Deref for SeaOrmExtConnection {
@@ -131,15 +162,17 @@ fn log_statement(stmt: &Statement) {
 #[async_trait::async_trait]
 impl ConnectionTrait for SeaOrmExtConnection {
     fn get_database_backend(&self) -> DbBackend {
-        self.inner.get_database_backend()
+        // 使用 effective_connection 以支持租户库的 backend（通常相同，但保持一致性）
+        self.effective_connection().get_database_backend()
     }
 
     async fn execute_raw(&self, stmt: Statement) -> Result<ExecResult, DbErr> {
         log_statement(&stmt);
         let stmt_clone = stmt.clone();
+        let db = self.effective_connection();
         self.with_retry(|| {
             let stmt = stmt_clone.clone();
-            self.inner.execute_raw(stmt)
+            db.execute_raw(stmt)
         })
         .await
     }
@@ -149,8 +182,9 @@ impl ConnectionTrait for SeaOrmExtConnection {
             tracing::info!("[summer-sea-orm-ext SQL] {}", sql);
         }
         let sql_owned = sql.to_string();
+        let db = self.effective_connection();
         self.with_retry(|| {
-            self.inner.execute_unprepared(&sql_owned)
+            db.execute_unprepared(&sql_owned)
         })
         .await
     }
@@ -158,9 +192,10 @@ impl ConnectionTrait for SeaOrmExtConnection {
     async fn query_one_raw(&self, stmt: Statement) -> Result<Option<QueryResult>, DbErr> {
         log_statement(&stmt);
         let stmt_clone = stmt.clone();
+        let db = self.effective_connection();
         self.with_retry(|| {
             let stmt = stmt_clone.clone();
-            self.inner.query_one_raw(stmt)
+            db.query_one_raw(stmt)
         })
         .await
     }
@@ -168,9 +203,10 @@ impl ConnectionTrait for SeaOrmExtConnection {
     async fn query_all_raw(&self, stmt: Statement) -> Result<Vec<QueryResult>, DbErr> {
         log_statement(&stmt);
         let stmt_clone = stmt.clone();
+        let db = self.effective_connection();
         self.with_retry(|| {
             let stmt = stmt_clone.clone();
-            self.inner.query_all_raw(stmt)
+            db.query_all_raw(stmt)
         })
         .await
     }
@@ -180,7 +216,8 @@ impl StreamTrait for SeaOrmExtConnection {
     type Stream<'a> = <DatabaseConnection as StreamTrait>::Stream<'a>;
 
     fn get_database_backend(&self) -> DbBackend {
-        self.inner.get_database_backend()
+        // 使用 effective_connection 以保持一致性
+        self.effective_connection().get_database_backend()
     }
 
     fn stream_raw<'a>(
@@ -190,6 +227,12 @@ impl StreamTrait for SeaOrmExtConnection {
         Box<dyn std::future::Future<Output = Result<Self::Stream<'a>, DbErr>> + Send + 'a>,
     > {
         log_statement(&stmt);
+        // 注意：StreamTrait 要求 Stream<'a> 借用 self，而 effective_connection() 返回 owned
+        // 的 DatabaseConnection，无法满足生命周期约束。
+        // 因此流式查询不自动路由到租户库，统一走主库（self.inner）。
+        // 业务层如需在租户库上执行流式查询，请手动用 tenant_db() 获取连接：
+        //   let tenant_db = tenant_db(&self.db)?;
+        //   let stream = Entity::find().stream(&tenant_db).await?;
         self.inner.stream_raw(stmt)
     }
 }
@@ -199,7 +242,7 @@ impl TransactionTrait for SeaOrmExtConnection {
     type Transaction = <DatabaseConnection as TransactionTrait>::Transaction;
 
     async fn begin(&self) -> Result<Self::Transaction, DbErr> {
-        self.inner.begin().await
+        self.effective_connection().begin().await
     }
 
     async fn begin_with_config(
@@ -207,14 +250,16 @@ impl TransactionTrait for SeaOrmExtConnection {
         isolation_level: Option<sea_orm::IsolationLevel>,
         access_mode: Option<sea_orm::AccessMode>,
     ) -> Result<Self::Transaction, DbErr> {
-        self.inner.begin_with_config(isolation_level, access_mode).await
+        self.effective_connection()
+            .begin_with_config(isolation_level, access_mode)
+            .await
     }
 
     async fn begin_with_options(
         &self,
         options: sea_orm::TransactionOptions,
     ) -> Result<Self::Transaction, DbErr> {
-        self.inner.begin_with_options(options).await
+        self.effective_connection().begin_with_options(options).await
     }
 
     async fn transaction<F, T, E>(&self, callback: F) -> Result<T, TransactionError<E>>
@@ -226,7 +271,7 @@ impl TransactionTrait for SeaOrmExtConnection {
         T: Send,
         E: std::fmt::Display + std::fmt::Debug + Send,
     {
-        self.inner.transaction(callback).await
+        self.effective_connection().transaction(callback).await
     }
 
     async fn transaction_with_config<F, T, E>(
@@ -243,7 +288,7 @@ impl TransactionTrait for SeaOrmExtConnection {
         T: Send,
         E: std::fmt::Display + std::fmt::Debug + Send,
     {
-        self.inner
+        self.effective_connection()
             .transaction_with_config(callback, isolation_level, access_mode)
             .await
     }

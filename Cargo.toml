@@ -1,6 +1,6 @@
 [package]
 name = "summer-sea-orm-ext"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 rust-version = "1.81"
 description = "SeaORM non-invasive extension: auto-fill, soft-delete, multi-tenant, with Summer plugin support"
@@ -105,7 +105,7 @@ summer-web = { version = "0.7.1", optional = true }
 tower = { version = "0.5", optional = true }
 
 tokio = { version = "1", optional = true, features = [
-    "sync", "macros", "rt", "rt-multi-thread",
+    "sync", "macros", "rt", "rt-multi-thread", "time",
 ] }
 
 [dev-dependencies]

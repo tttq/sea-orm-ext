@@ -109,6 +109,18 @@ pub fn get_tenant_database_provider() -> Option<Arc<dyn TenantDatabaseProvider>>
 
 pub trait TenantIdProvider: Send + Sync + 'static {
     fn get_tenant_id(&self) -> Option<Value>;
+
+    /// 运行时租户模式（"table" / "database"）。
+    ///
+    /// 用于在全局 `TenantConfig::mode` 之外，按当前请求/令牌动态决定租户隔离模式。
+    /// 例如：全局配置为 `table`，但 JWT token 标识当前用户属于 `database` 模式租户时，
+    /// `is_tenant_enforced()` 应跳过 `WHERE tenant_id = ?` 注入，
+    /// `SeaOrmExtConnection` 应自动路由到租户专属数据库。
+    ///
+    /// 默认返回 `None`，表示沿用全局配置，保持已有实现兼容。
+    fn get_tenant_mode(&self) -> Option<String> {
+        None
+    }
 }
 
 pub trait TenantDatabaseProvider: Send + Sync + 'static {
@@ -343,14 +355,50 @@ pub fn get_current_tenant_id() -> Option<Value> {
 }
 
 pub fn is_tenant_enforced() -> bool {
-    is_tenant_enabled() && get_tenant_mode() == Some(TenantMode::Table) && !is_tenant_filter_disabled()
+    if !is_tenant_enabled() || is_tenant_filter_disabled() {
+        return false;
+    }
+
+    // 优先读运行时 mode（来自 TenantIdProvider，如 JWT token 的 tenantMode 字段）。
+    // database 模式租户的查询不注入 WHERE tenant_id = ?（租户库已物理隔离）。
+    get_effective_tenant_mode() == Some(TenantMode::Table)
+}
+
+/// 获取当前生效的租户模式。
+///
+/// 优先级：运行时 provider（如 JWT token 的 tenantMode） > 全局配置。
+/// 用于业务层判断当前请求应该走 table 还是 database 隔离，
+/// 以及 `SeaOrmExtConnection` 的自动数据库路由。
+///
+/// # 回退策略
+///
+/// - provider 未实现 `get_tenant_mode()`（返回 `None`）：回退全局配置
+/// - provider 返回 `Some("invalid")`（无效字符串）：记录警告并回退全局配置
+/// - provider 返回 `Some("database")` / `Some("table")`：使用 provider 的值
+pub fn get_effective_tenant_mode() -> Option<TenantMode> {
+    if let Some(provider) = get_tenant_id_provider() {
+        if let Some(mode) = provider.get_tenant_mode() {
+            match mode.to_lowercase().as_str() {
+                "database" => return Some(TenantMode::Database),
+                "table" => return Some(TenantMode::Table),
+                _ => {
+                    tracing::warn!(
+                        "TENANT-MODE: invalid provider mode '{}', falling back to global config",
+                        mode
+                    );
+                    // 无效字符串不直接返回 None，继续回退到全局配置
+                }
+            }
+        }
+    }
+    get_tenant_mode()
 }
 
 thread_local! {
     static TENANT_FILTER_DISABLED_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-fn is_tenant_filter_disabled() -> bool {
+pub(crate) fn is_tenant_filter_disabled() -> bool {
     TENANT_FILTER_DISABLED_DEPTH.with(|f| f.get() > 0)
 }
 
@@ -695,6 +743,82 @@ pub fn get_database_for_tenant(tenant_id: &Value) -> Result<Option<DatabaseConne
         tenant_id
     );
     Ok(get_available_default_database())
+}
+
+/// 获取指定租户的数据库连接（不检查 mode，仅按 tenant_id 查 ConnectionStore）。
+///
+/// 内部使用，供自动路由调用。mode 检查由调用方（如 `get_tenant_database_for_current`）负责。
+///
+/// 与 [`get_database_for_tenant`] 的区别：
+/// - [`get_database_for_tenant`] 会检查全局 `get_tenant_mode()`，table 模式下直接返回主库
+/// - 本函数不检查 mode，仅按 tenant_id 查找连接缓存
+///
+/// 适用场景：运行时 provider 指定为 database 模式但全局配置为 table 模式时，
+/// 仍能正确路由到租户专属库。
+pub fn get_database_for_tenant_unchecked(tenant_id: &Value) -> Result<Option<DatabaseConnection>, DbErr> {
+    if !is_tenant_enabled() {
+        return Ok(None);
+    }
+
+    let Some(store) = get_tenant_store() else {
+        return Err(DbErr::Custom(
+            "DATABASE-ISOLATION: tenant connection store not initialized.".to_owned(),
+        ));
+    };
+
+    if let Some(conn) = store.get(tenant_id) {
+        return Ok(Some(conn));
+    }
+
+    tracing::warn!(
+        "DATABASE-FAILOVER: no connection for tenant {:?}, trying fallback chain",
+        tenant_id
+    );
+    Ok(get_available_default_database())
+}
+
+/// 获取当前请求生效的数据库连接（基于运行时 tenant mode 自动路由）。
+///
+/// 优先级：运行时 provider mode > 全局配置 mode。
+///
+/// - database 模式 + 当前 tenant_id：返回租户专属 db
+/// - table 模式 或 未登录：返回 `None`（用主库 self.inner）
+///
+/// 供 `SeaOrmExtConnection` 在执行 SQL 前自动调用，业务层无需手动选库。
+///
+/// # 自动路由逻辑
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────┐
+/// │ effective_connection() 调用链                               │
+/// ├─────────────────────────────────────────────────────────────┤
+/// │ 1. TenantIgnoreGuard 生效？  ──Yes──→  返回主库（None）     │
+/// │                                  No                          │
+/// │ 2. get_effective_tenant_mode() == Database？                │
+/// │    Yes → 查租户连接（unchecked）                            │
+/// │    No  → 返回 None（主库）                                  │
+/// └─────────────────────────────────────────────────────────────┘
+/// ```
+pub fn get_tenant_database_for_current() -> Result<Option<DatabaseConnection>, DbErr> {
+    if !is_tenant_enabled() {
+        return Ok(None);
+    }
+
+    // TenantIgnoreGuard 生效时走主库（用于查询全局表）
+    if is_tenant_filter_disabled() {
+        return Ok(None);
+    }
+
+    // 读运行时 mode（provider）> 全局配置 mode
+    if get_effective_tenant_mode() != Some(TenantMode::Database) {
+        return Ok(None);
+    }
+
+    let Some(tenant_id) = get_current_tenant_id() else {
+        return Ok(None);
+    };
+
+    get_database_for_tenant_unchecked(&tenant_id)
 }
 
 #[cfg(feature = "runtime-tokio")]

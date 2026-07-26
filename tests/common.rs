@@ -31,6 +31,9 @@ pub use summer_sea_orm_ext::{
     set_tenant_context, TenantContext,
     get_tenant_config,
     get_id_generator, get_field_fill_handler,
+    get_effective_tenant_mode,
+    get_tenant_database_for_current, get_database_for_tenant_unchecked,
+    TenantIgnoreGuard,
 };
 
 pub static LOG_INIT: OnceLock<()> = OnceLock::new();
@@ -51,6 +54,20 @@ pub fn reset_global_state() {
     clear_field_fill_handler();
     set_tenant_id_provider(Arc::new(TestTenantIdProvider::new()));
     disable_sql_log();
+}
+
+/// 重置全局状态并返回 TestTenantIdProvider 的 handle，
+/// 便于测试动态设置 tenant_id 和 tenant_mode。
+pub fn reset_global_state_with_provider() -> Arc<TestTenantIdProvider> {
+    clear_tenant_config();
+    clear_tenant_store();
+    clear_id_generator();
+    clear_field_fill_handler();
+    let provider = Arc::new(TestTenantIdProvider::new());
+    let handle: Arc<dyn TenantIdProvider> = provider.handle();
+    set_tenant_id_provider(handle);
+    disable_sql_log();
+    provider
 }
 
 mod product_entity {
@@ -211,12 +228,14 @@ impl FieldFillHandler for TestFillHandler {
 
 pub struct TestTenantIdProvider {
     tenant_id: Arc<RwLock<Option<Value>>>,
+    tenant_mode: Arc<RwLock<Option<String>>>,
 }
 
 impl TestTenantIdProvider {
     pub fn new() -> Self {
         Self {
             tenant_id: Arc::new(RwLock::new(None)),
+            tenant_mode: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -225,8 +244,17 @@ impl TestTenantIdProvider {
         *guard = Some(id);
     }
 
+    /// 设置运行时租户模式（模拟 JWT token 中的 tenantMode 字段）
+    pub fn set_mode(&self, mode: Option<&str>) {
+        let mut guard = self.tenant_mode.write().unwrap();
+        *guard = mode.map(|s| s.to_string());
+    }
+
     pub fn handle(&self) -> Arc<dyn TenantIdProvider> {
-        Arc::new(Self { tenant_id: self.tenant_id.clone() })
+        Arc::new(Self {
+            tenant_id: self.tenant_id.clone(),
+            tenant_mode: self.tenant_mode.clone(),
+        })
     }
 }
 
@@ -239,6 +267,11 @@ impl Default for TestTenantIdProvider {
 impl TenantIdProvider for TestTenantIdProvider {
     fn get_tenant_id(&self) -> Option<Value> {
         let guard = self.tenant_id.read().unwrap();
+        guard.clone()
+    }
+
+    fn get_tenant_mode(&self) -> Option<String> {
+        let guard = self.tenant_mode.read().unwrap();
         guard.clone()
     }
 }
