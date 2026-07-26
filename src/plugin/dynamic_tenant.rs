@@ -251,4 +251,12 @@ impl Plugin for DynamicTenantPlugin {
     fn name(&self) -> &'static str {
         "summer-sea-orm-ext-dynamic-tenant"
     }
+
+    /// 依赖 `SeaOrmPlugin`（提供主库 `DatabaseConnection`）和 `TenantPlugin`
+    /// （设置 `get_tenant_mode()`）。Summer 框架按依赖拓扑排序构建插件，
+    /// 未声明依赖时构建顺序由 DashMap 哈希决定，无法保证前置插件先构建，
+    /// 会导致启动时找不到 DatabaseConnection 组件。
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["summer-sea-orm-ext", "summer-sea-orm-ext-tenant"]
+    }
 }

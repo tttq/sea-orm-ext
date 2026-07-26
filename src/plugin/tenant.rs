@@ -636,6 +636,13 @@ impl Plugin for TenantPlugin {
     fn name(&self) -> &'static str {
         "summer-sea-orm-ext-tenant"
     }
+
+    /// 依赖 `SeaOrmPlugin`：本插件在 build 时会读取主库 `DatabaseConnection` 组件
+    /// 用作默认数据库 fallback。Summer 框架按依赖拓扑排序构建插件，未声明依赖时
+    /// 构建顺序由 DashMap 哈希决定，无法保证 SeaOrmPlugin 先构建。
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["summer-sea-orm-ext"]
+    }
 }
 
 #[cfg(feature = "summer-web")]
