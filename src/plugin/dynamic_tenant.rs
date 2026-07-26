@@ -152,14 +152,24 @@ impl Plugin for DynamicTenantPlugin {
             return;
         }
 
-        // 校验多租户模式：仅 Database 模式下激活
+        // 校验多租户已启用（mode 由全局配置或运行时 provider 决定）
+        //
+        // v0.0.3+ 支持混合模式：全局 `mode = "table"` + 部分租户运行时 database 模式。
+        // 因此不再强制要求全局 mode 为 Database，只要 tenant 已启用，插件就启动：
+        //   - 全局 Database 模式：所有租户走租户库（原行为）
+        //   - 全局 Table 模式 + 运行时 provider 返回 "database"：混合模式，
+        //     部分租户走租户库，其余走主库 + WHERE tenant_id
+        //   - 全局 Table 模式 + provider 未实现 get_tenant_mode()：插件启动但 store
+        //     无租户连接，所有查询走主库（与未启用插件等效）
         match get_tenant_mode() {
-            Some(TenantMode::Database) => {}
+            Some(TenantMode::Database) => {
+                tracing::info!("DYNAMIC-TENANT: global tenant mode is 'Database'");
+            }
             Some(TenantMode::Table) => {
-                tracing::warn!(
-                    "DYNAMIC-TENANT: tenant mode is 'Table', dynamic tenant management is only effective in 'Database' mode"
+                tracing::info!(
+                    "DYNAMIC-TENANT: global tenant mode is 'Table', plugin started for hybrid mode \
+                     (tenants with runtime mode='database' will be routed to tenant DBs)"
                 );
-                return;
             }
             None => {
                 tracing::warn!(

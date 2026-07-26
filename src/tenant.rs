@@ -760,10 +760,22 @@ pub fn get_database_for_tenant_unchecked(tenant_id: &Value) -> Result<Option<Dat
         return Ok(None);
     }
 
+    // store 未初始化时返回 None 走 fallback（与 effective_connection 容错策略一致）
+    //
+    // 适用场景：
+    //   - DynamicTenantPlugin 未启用或启动失败
+    //   - 全局 table 模式但运行时 provider 指定某租户为 database 模式
+    //   - 测试环境未注册 store
+    //
+    // 与 get_database_for_tenant() 的区别：后者在 store 未初始化时返回 Err，
+    // 因为那是显式调用方期望严格模式检查；本函数用于自动路由，应容忍配置缺失。
     let Some(store) = get_tenant_store() else {
-        return Err(DbErr::Custom(
-            "DATABASE-ISOLATION: tenant connection store not initialized.".to_owned(),
-        ));
+        tracing::warn!(
+            "DATABASE-FAILOVER: tenant connection store not initialized, \
+             falling back to main db for tenant {:?}",
+            tenant_id
+        );
+        return Ok(get_available_default_database());
     };
 
     if let Some(conn) = store.get(tenant_id) {

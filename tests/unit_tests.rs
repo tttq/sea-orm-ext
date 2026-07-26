@@ -2163,3 +2163,68 @@ fn test_get_tenant_database_for_current_scenarios() {
     let result = get_tenant_database_for_current().unwrap();
     assert!(result.is_none(), "empty store should return None (fallback to main db)");
 }
+
+/// 测试 7：get_database_for_tenant_unchecked() 在 store 未初始化时返回 Ok(None) 走 fallback
+///
+/// 验证：DynamicTenantPlugin 未启用或启动失败时，业务层调用不受影响，
+/// 自动回退到默认数据库（main db）。
+#[test]
+#[serial]
+fn test_get_database_for_tenant_unchecked_store_not_initialized() {
+    reset_global_state();
+
+    // 启用租户但未注册 store（模拟 DynamicTenantPlugin 未启动的场景）
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table, // 全局 table 模式
+        default_tenant_id: Some(Value::String(Some("1".to_string()))),
+        ignored_tables: HashSet::new(),
+    });
+
+    // 未注册 store → 不应报错，返回 Ok(None) 或 Ok(默认库)
+    let result = get_database_for_tenant_unchecked(&Value::String(Some("tenant-1".to_string())));
+    assert!(result.is_ok(), "should not return Err when store is not initialized");
+    // 没有默认库时返回 None
+    assert!(result.unwrap().is_none(), "should fallback to None when no default db configured");
+}
+
+/// 测试 8：get_database_for_tenant_unchecked() 跳过 mode 检查
+///
+/// 验证：全局配置为 table 模式，但本函数仍能查到租户连接（用于运行时 database 模式租户）
+#[test]
+#[serial]
+fn test_get_database_for_tenant_unchecked_skips_mode_check() {
+    init_logging();
+    reset_global_state();
+
+    // 全局配置为 table 模式
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    // 注册一个租户连接到 store
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let tenant_conn = rt.block_on(async {
+        sea_orm::Database::connect("sqlite::memory:").await.unwrap()
+    });
+    store.insert(
+        Value::String(Some("tenant-1".to_string())),
+        tenant_conn,
+    ).unwrap();
+    set_tenant_store(store);
+
+    // 即使全局是 table 模式，unchecked 版本仍能查到连接
+    // （用于运行时 provider 指定 database 模式的租户）
+    let result = get_database_for_tenant_unchecked(&Value::String(Some("tenant-1".to_string())));
+    assert!(result.is_ok(), "should succeed even in global table mode");
+    assert!(result.unwrap().is_some(), "should find the tenant connection");
+
+    // 查不存在的租户 → 返回 None（fallback）
+    let result = get_database_for_tenant_unchecked(&Value::String(Some("non-existent".to_string())));
+    assert!(result.is_ok(), "should not error for unknown tenant");
+    assert!(result.unwrap().is_none(), "should return None for unknown tenant (fallback)");
+}

@@ -8,7 +8,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
 [![crates.io](https://img.shields.io/badge/crates.io-v0.0.3-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
 [![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/summer-sea-orm-ext)
-[![Test Status](https://img.shields.io/badge/tests-160%20passed-green?style=for-the-badge)](#测试覆盖)
+[![Test Status](https://img.shields.io/badge/tests-162%20passed-green?style=for-the-badge)](#测试覆盖)
 
 > ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，业务层零样板代码，深度集成 Summer 框架
 
@@ -780,10 +780,10 @@ summer_sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 | `crud_tests.rs` | 13 | 单条 CRUD、自动填充、字符串主键、UUID/Snowflake ID |
 | `macro_tests.rs` | 17 | 批量插入/更新/软删除、`#[ignore_tenant]` 宏功能测试 |
 | `integration_tests.rs` | 34 | 多租户隔离（Table/Database 双模式）、TenantIdProvider、SQL 日志、SeaOrmExtConnection、update_many/delete_many 租户过滤 |
-| `unit_tests.rs` | 85 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试、**自动路由（v0.0.3+）** |
+| `unit_tests.rs` | 87 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试、**自动路由（v0.0.3+）**、**混合模式 fallback** |
 | `lib.rs` (内嵌) | 11 | 分页逻辑、TOML 配置加载、基础工具函数 |
 
-**总计：160 个测试，100% 通过**
+**总计：162 个测试，100% 通过**
 
 ```bash
 cargo test --workspace --features full

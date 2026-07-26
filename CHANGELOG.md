@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 与 `get_database_for_tenant()` 区别：不检查全局 mode，仅按 tenant_id 查找连接缓存
   - 适用场景：运行时 provider 指定为 database 模式但全局配置为 table 模式时仍能正确路由
 - **6 个自动路由测试**：覆盖 `get_effective_tenant_mode` 优先级、`is_tenant_enforced` 行为、`SeaOrmExtConnection` 自动路由、`TenantIgnoreGuard` 走主库、table 模式走主库等场景
+- **2 个混合模式 fallback 测试**：覆盖 `get_database_for_tenant_unchecked` 在 store 未初始化时返回 `Ok(None)` 走 fallback、跳过 mode 检查等场景
+- **`DynamicTenantPlugin` 支持混合模式启动**：不再强制要求全局 `mode = "database"`，全局 table 模式下插件也会启动并初始化 `ConnectionStore`，配合运行时 `TenantIdProvider.get_tenant_mode()` 实现"全局 table + 部分租户 database"的混合模式
 
 ### Changed
 
@@ -36,9 +38,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`is_tenant_enforced()` 重写**：基于 `get_effective_tenant_mode()` 判断，支持运行时 provider 模式
   - database 模式租户的查询不注入 WHERE tenant_id（租户库已物理隔离）
   - 无 provider 时回退原逻辑（按全局配置）
+- **`get_database_for_tenant_unchecked()` 容错策略**：store 未初始化时从返回 `Err` 改为返回 `Ok(None)` 走 fallback，与 `effective_connection` 的容错策略一致
+  - 适用场景：`DynamicTenantPlugin` 未启用或启动失败、测试环境未注册 store
+  - 与 `get_database_for_tenant()` 的区别：后者保留 `Err` 行为，因为那是显式调用方期望严格模式检查
 - **`StreamTrait::stream_raw` 限制说明**：流式查询不自动路由到租户库（生命周期约束），需手动用 `tenant_db()` 获取连接
 - **README 文档更新**：
-  - 顶部 badge 版本号 0.0.2 → 0.0.3，测试数 154 → 160
+  - 顶部 badge 版本号 0.0.2 → 0.0.3，测试数 154 → 162
   - 特性对比表新增"🔌 自动路由"项
   - 新增 4.1 章节"自动路由（v0.0.3+ 新增）"详细说明行为矩阵和混合模式最佳实践
   - 多租户场景示例中区分"自动路由"与"手动切换"两种方式
