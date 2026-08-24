@@ -373,6 +373,76 @@ fn test_typed_id_generator_with_start() {
     }
 }
 
+#[cfg(feature = "summer")]
+fn extract_snowflake_value(val: Value) -> i64 {
+    match val {
+        Value::BigInt(Some(v)) => v,
+        _ => panic!("Expected BigInt from SnowflakeIdGenerator"),
+    }
+}
+
+#[test]
+#[cfg(feature = "summer")]
+#[serial]
+fn test_snowflake_id_generator_single_thread_unique() {
+    let gen = summer_sea_orm_ext::plugin::summer_sea_orm_ext::SnowflakeIdGenerator::new(1);
+
+    let mut ids = HashSet::with_capacity(5000);
+    for _ in 0..5000 {
+        let id = extract_snowflake_value(gen.generate());
+        assert_ne!(id, 0);
+        assert!(ids.insert(id), "duplicate snowflake id: {}", id);
+    }
+
+    // 同一 worker 内（时间戳+序列号）保证 ID 单调递增
+    let generated: Vec<i64> = std::iter::from_fn(|| Some(extract_snowflake_value(gen.generate())))
+        .take(1000)
+        .collect();
+    for w in generated.windows(2) {
+        assert!(w[1] > w[0], "snowflake ids should be strictly increasing");
+    }
+}
+
+#[test]
+#[cfg(feature = "summer")]
+#[serial]
+fn test_snowflake_id_generator_concurrent_unique() {
+    use std::sync::Barrier;
+
+    const THREADS: usize = 8;
+    const IDS_PER_THREAD: usize = 20_000;
+
+    let gen = Arc::new(summer_sea_orm_ext::plugin::summer_sea_orm_ext::SnowflakeIdGenerator::new(1));
+    let barrier = Arc::new(Barrier::new(THREADS));
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let gen = Arc::clone(&gen);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let mut local = Vec::with_capacity(IDS_PER_THREAD);
+                for _ in 0..IDS_PER_THREAD {
+                    local.push(extract_snowflake_value(gen.generate()));
+                }
+                local
+            })
+        })
+        .collect();
+
+    let mut all_ids = HashSet::with_capacity(THREADS * IDS_PER_THREAD);
+    for h in handles {
+        for id in h.join().unwrap() {
+            assert!(
+                all_ids.insert(id),
+                "duplicate snowflake id under concurrency: {}",
+                id
+            );
+        }
+    }
+    assert_eq!(all_ids.len(), THREADS * IDS_PER_THREAD);
+}
+
 #[test]
 #[serial]
 fn test_field_fill_handler_set_and_get() {

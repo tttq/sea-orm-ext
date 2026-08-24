@@ -1,6 +1,6 @@
 [package]
 name = "summer-sea-orm-ext"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 rust-version = "1.81"
 description = "SeaORM non-invasive extension: auto-fill, soft-delete, multi-tenant, with Summer plugin support"

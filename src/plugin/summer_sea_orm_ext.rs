@@ -276,14 +276,16 @@ impl IdGenerator for DefaultIdGenerator {
 pub struct SnowflakeIdGenerator {
     epoch: i64,
     worker_id: i64,
-    last_timestamp: std::sync::atomic::AtomicI64,
-    sequence: std::sync::atomic::AtomicI16,
+    /// 单变量原子状态：高 52 位存 last_timestamp，低 12 位存 sequence。
+    /// 通过一次 CAS 同时推进时间戳和序列号，保证并发下不产生重复 ID。
+    state: std::sync::atomic::AtomicI64,
 }
 
 const WORKER_ID_BITS: i64 = 10;
 const SEQUENCE_BITS: i64 = 12;
 const MAX_WORKER_ID: i64 = (1 << WORKER_ID_BITS) - 1;
 const MAX_SEQUENCE: i16 = (1 << SEQUENCE_BITS) as i16;
+const SEQUENCE_MASK: i64 = (1 << SEQUENCE_BITS) - 1;
 const WORKER_ID_SHIFT: i64 = SEQUENCE_BITS;
 const TIMESTAMP_SHIFT: i64 = SEQUENCE_BITS + WORKER_ID_BITS;
 
@@ -304,8 +306,8 @@ impl SnowflakeIdGenerator {
         Self {
             epoch,
             worker_id,
-            last_timestamp: std::sync::atomic::AtomicI64::new(-1),
-            sequence: std::sync::atomic::AtomicI16::new(0),
+            // 初始 last_timestamp = -1（算术右移还原），sequence = 0
+            state: std::sync::atomic::AtomicI64::new(-1i64 << SEQUENCE_BITS),
         }
     }
 
@@ -346,37 +348,47 @@ impl IdGenerator for SnowflakeIdGenerator {
 impl SnowflakeIdGenerator {
     fn generate_snowflake_id(&self) -> i64 {
         let mut ts = self.current_timestamp();
-        let last_ts = self.last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
+        loop {
+            let state = self.state.load(std::sync::atomic::Ordering::Acquire);
+            let last_ts = state >> SEQUENCE_BITS;
+            let seq = (state & SEQUENCE_MASK) as i16;
 
-        let seq = if ts == last_ts {
-            let s = self.sequence.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if s >= MAX_SEQUENCE {
+            if ts < last_ts {
+                // 时钟回拨：自旋等待追上上次时间戳
                 ts = self.wait_next_millis(last_ts);
-                self.sequence.store(0, std::sync::atomic::Ordering::SeqCst);
-                0
-            } else {
-                s
+                continue;
             }
-        } else if ts > last_ts {
-            let swapped = self.last_timestamp.compare_exchange(
-                last_ts,
-                ts,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            );
-            if swapped.is_err() {
-                ts = self.last_timestamp.load(std::sync::atomic::Ordering::SeqCst);
-            }
-            self.sequence.store(0, std::sync::atomic::Ordering::SeqCst);
-            0
-        } else {
-            ts = self.wait_next_millis(last_ts);
-            self.sequence.store(0, std::sync::atomic::Ordering::SeqCst);
-            0
-        };
 
-        ((ts - self.epoch) << TIMESTAMP_SHIFT)
-            | (self.worker_id << WORKER_ID_SHIFT)
-            | (seq as i64)
+            let (new_ts, new_seq) = if ts == last_ts {
+                let next = seq + 1;
+                if next >= MAX_SEQUENCE {
+                    // 同一毫秒序列号耗尽：等待下一毫秒后从 0 重新开始
+                    ts = self.wait_next_millis(last_ts);
+                    continue;
+                }
+                (ts, next)
+            } else {
+                // 新毫秒：序列号归零
+                (ts, 0)
+            };
+
+            let new_state = (new_ts << SEQUENCE_BITS) | new_seq as i64;
+            if self
+                .state
+                .compare_exchange_weak(
+                    state,
+                    new_state,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return ((new_ts - self.epoch) << TIMESTAMP_SHIFT)
+                    | (self.worker_id << WORKER_ID_SHIFT)
+                    | new_seq as i64;
+            }
+            // CAS 失败：状态已被其他线程更新，基于最新状态重试
+            std::hint::spin_loop();
+        }
     }
 }
