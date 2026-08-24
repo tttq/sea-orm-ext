@@ -403,7 +403,7 @@ async fn test_database_isolation_crud_per_tenant() {
 
 #[tokio::test]
 #[serial]
-async fn test_summer_sea_orm_ext_connection_insert_and_query() {
+async fn test_sea_orm_ext_connection_insert_and_query() {
     init_logging();
     reset_global_state();
 
@@ -613,7 +613,7 @@ async fn test_auto_fill_tenant_delete_is_physical() {
 
 #[tokio::test]
 #[serial]
-async fn test_summer_sea_orm_ext_connection_update() {
+async fn test_sea_orm_ext_connection_update() {
     init_logging();
     reset_global_state();
 
@@ -637,7 +637,7 @@ async fn test_summer_sea_orm_ext_connection_update() {
 
 #[tokio::test]
 #[serial]
-async fn test_summer_sea_orm_ext_connection_soft_delete() {
+async fn test_sea_orm_ext_connection_soft_delete() {
     init_logging();
     reset_global_state();
 
@@ -681,7 +681,7 @@ async fn test_sql_log_toggle() {
 
 #[tokio::test]
 #[serial]
-async fn test_summer_sea_orm_ext_connection_batch_operations() {
+async fn test_sea_orm_ext_connection_batch_operations() {
     init_logging();
     reset_global_state();
 

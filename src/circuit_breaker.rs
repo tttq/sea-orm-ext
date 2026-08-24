@@ -8,7 +8,7 @@
 //! # 用法
 //!
 //! ```ignore
-//! use summer_sea_orm_ext::circuit_breaker::CircuitBreaker;
+//! use sea_orm_ext::circuit_breaker::CircuitBreaker;
 //! use std::time::Duration;
 //!
 //! let breaker = CircuitBreaker::new(5, Duration::from_secs(30));

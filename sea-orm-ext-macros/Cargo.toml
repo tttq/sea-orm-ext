@@ -1,15 +1,15 @@
 # ============================================================================
-# summer-sea-orm-ext-macros — 过程宏
+# sea-orm-ext-macros — 过程宏
 #
 # 提供 DeriveAutoFill、DeriveSoftDelete、DeriveTenant 等派生宏，
 # 为非侵入式的 ORM 扩展提供编译期代码生成。
 # ============================================================================
 
 [package]
-name = "summer-sea-orm-ext-macros"
+name = "sea-orm-ext-macros"
 version = "0.0.4"
 edition = "2021"
-description = "Proc macros for summer-sea-orm-ext: DeriveAutoFill, DeriveSoftDelete, DeriveTenant, etc."
+description = "Proc macros for sea-orm-ext: DeriveAutoFill, DeriveSoftDelete, DeriveTenant, etc."
 license = "MIT"
 
 [lib]

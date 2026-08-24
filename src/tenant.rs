@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::summer_sea_orm_ext_connection::SeaOrmExtConnection;
+use crate::sea_orm_ext_connection::SeaOrmExtConnection;
 
 #[cfg(feature = "runtime-tokio")]
 use std::future::Future;
@@ -140,7 +140,7 @@ pub trait TenantDatabaseProvider: Send + Sync + 'static {
 /// # 示例
 ///
 /// ```ignore
-/// use summer_sea_orm_ext::{TenantIdCodec, set_tenant_id_codec};
+/// use sea_orm_ext::{TenantIdCodec, set_tenant_id_codec};
 /// use sea_orm::DbErr;
 /// use sea_query::Value;
 /// use std::sync::Arc;

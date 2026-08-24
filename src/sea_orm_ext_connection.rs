@@ -148,13 +148,13 @@ fn log_statement(stmt: &Statement) {
             };
             let params: Vec<String> = values.0.iter().map(|v| format!("{:?}", v)).collect();
             tracing::info!(
-                "[summer-sea-orm-ext SQL] {}\n[summer-sea-orm-ext Params] [{}]",
+                "[sea-orm-ext SQL] {}\n[sea-orm-ext Params] [{}]",
                 full_sql,
                 params.join(", ")
             );
         }
         None => {
-            tracing::info!("[summer-sea-orm-ext SQL] {}", stmt.sql);
+            tracing::info!("[sea-orm-ext SQL] {}", stmt.sql);
         }
     }
 }
@@ -179,7 +179,7 @@ impl ConnectionTrait for SeaOrmExtConnection {
 
     async fn execute_unprepared(&self, sql: &str) -> Result<ExecResult, DbErr> {
         if crate::log::is_sql_log_enabled() {
-            tracing::info!("[summer-sea-orm-ext SQL] {}", sql);
+            tracing::info!("[sea-orm-ext SQL] {}", sql);
         }
         let sql_owned = sql.to_string();
         let db = self.effective_connection();

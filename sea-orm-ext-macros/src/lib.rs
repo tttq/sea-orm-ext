@@ -1,4 +1,4 @@
-//! # summer-sea-orm-ext-macros
+//! # sea-orm-ext-macros
 //!
 //! 过程宏(proc-macro)实现，为 sea-orm-ext 提供派生宏支持。
 //!
@@ -120,11 +120,11 @@ enum DeriveKind {
 
 /// `DeriveAutoFill` 派生宏入口
 ///
-/// 为标记了 `#[summer_sea_orm_ext(insert)]` / `#[summer_sea_orm_ext(update)]` /
-/// `#[summer_sea_orm_ext(insert_update)]` 的字段在对应时机调用全局填充处理器。
+/// 为标记了 `#[sea_orm_ext(insert)]` / `#[sea_orm_ext(update)]` /
+/// `#[sea_orm_ext(insert_update)]` 的字段在对应时机调用全局填充处理器。
 ///
 /// 也兼容旧的 `#[sea_orm_ext(...)]` 属性名。
-#[proc_macro_derive(DeriveAutoFill, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm))]
+#[proc_macro_derive(DeriveAutoFill, attributes(sea_orm_ext, sea_orm_ext, sea_orm))]
 pub fn derive_auto_fill(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFill, &input).into()
@@ -134,7 +134,7 @@ pub fn derive_auto_fill(input: proc_macro::TokenStream) -> proc_macro::TokenStre
 ///
 /// 为标记了 `#[soft_delete(default = 0, del = 1)]` 的字段生成软删除逻辑：
 /// `before_delete` 中标记该字段为删除值并返回错误以阻止实际删除。
-#[proc_macro_derive(DeriveSoftDelete, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm, soft_delete))]
+#[proc_macro_derive(DeriveSoftDelete, attributes(sea_orm_ext, sea_orm_ext, sea_orm, soft_delete))]
 pub fn derive_soft_delete(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::SoftDelete, &input).into()
@@ -143,7 +143,7 @@ pub fn derive_soft_delete(input: proc_macro::TokenStream) -> proc_macro::TokenSt
 /// `DeriveAutoFillSoftDelete` 派生宏入口
 ///
 /// 同时启用自动填充和软删除功能。
-#[proc_macro_derive(DeriveAutoFillSoftDelete, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm, soft_delete))]
+#[proc_macro_derive(DeriveAutoFillSoftDelete, attributes(sea_orm_ext, sea_orm_ext, sea_orm, soft_delete))]
 pub fn derive_auto_fill_soft_delete(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillSoftDelete, &input).into()
@@ -151,11 +151,11 @@ pub fn derive_auto_fill_soft_delete(input: proc_macro::TokenStream) -> proc_macr
 
 /// `DeriveTenant` 派生宏入口
 ///
-/// 为标记了 `#[summer_sea_orm_ext(TENANT)]` 的字段生成多租户注入逻辑：
+/// 为标记了 `#[sea_orm_ext(TENANT)]` 的字段生成多租户注入逻辑：
 /// 在 `before_save` 中自动将当前租户 ID 写入该字段。
 ///
 /// 也兼容旧的 `#[sea_orm_ext(TENANT)]` 属性名。
-#[proc_macro_derive(DeriveTenant, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm))]
+#[proc_macro_derive(DeriveTenant, attributes(sea_orm_ext, sea_orm_ext, sea_orm))]
 pub fn derive_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::Tenant, &input).into()
@@ -165,7 +165,7 @@ pub fn derive_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
 ///
 /// 同时启用自动填充和多租户功能（不含软删除）。
 /// 适用于需要自动 ID 生成、字段填充和租户隔离，但不需要软删除的实体。
-#[proc_macro_derive(DeriveAutoFillTenant, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm))]
+#[proc_macro_derive(DeriveAutoFillTenant, attributes(sea_orm_ext, sea_orm_ext, sea_orm))]
 pub fn derive_auto_fill_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillTenant, &input).into()
@@ -174,7 +174,7 @@ pub fn derive_auto_fill_tenant(input: proc_macro::TokenStream) -> proc_macro::To
 /// `DeriveAutoFillSoftDeleteTenant` 派生宏入口
 ///
 /// 同时启用自动填充、软删除和多租户功能(全功能组合)。
-#[proc_macro_derive(DeriveAutoFillSoftDeleteTenant, attributes(sea_orm_ext, summer_sea_orm_ext, sea_orm, soft_delete))]
+#[proc_macro_derive(DeriveAutoFillSoftDeleteTenant, attributes(sea_orm_ext, sea_orm_ext, sea_orm, soft_delete))]
 pub fn derive_auto_fill_soft_delete_tenant(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     expand_derive(DeriveKind::AutoFillSoftDeleteTenant, &input).into()
@@ -193,7 +193,7 @@ pub fn derive_auto_fill_soft_delete_tenant(input: proc_macro::TokenStream) -> pr
 /// # 示例
 ///
 /// ```ignore
-/// use summer_sea_orm_ext::ignore_tenant;
+/// use sea_orm_ext::ignore_tenant;
 ///
 /// #[ignore_tenant]
 /// async fn get_global_config(db: &DbConn) -> Result<Config, DbErr> {
@@ -225,7 +225,7 @@ pub fn ignore_tenant(
     let original_stmts = &original_block.stmts;
 
     let new_block: syn::Block = syn::parse_quote! {{
-        let _guard = ::summer_sea_orm_ext::TenantIgnoreGuard::new();
+        let _guard = ::sea_orm_ext::TenantIgnoreGuard::new();
         #(#original_stmts)*
     }};
 
@@ -289,7 +289,7 @@ fn expand_derive(kind: DeriveKind, input: &syn::DeriveInput) -> TokenStream {
             Ok(None) => {
                 return syn::Error::new_spanned(
                     &input.ident,
-                    "DeriveTenant requires a field annotated with #[summer_sea_orm_ext(TENANT)] or #[sea_orm_ext(TENANT)]",
+                    "DeriveTenant requires a field annotated with #[sea_orm_ext(TENANT)] or #[sea_orm_ext(TENANT)]",
                 )
                     .to_compile_error();
             }
@@ -371,11 +371,11 @@ fn parse_fill_fields(data: &Data) -> syn::Result<Vec<FillFieldInfo>> {
         let mut is_ignored = false;
         let mut fill_mode = None;
 
-        // 解析 `sea_orm`、`sea_orm_ext`、`summer_sea_orm_ext` 属性中的标注
+        // 解析 `sea_orm`、`sea_orm_ext`、`sea_orm_ext` 属性中的标注
         for attr in field.attrs.iter() {
             if attr.path().is_ident("sea_orm")
                 || attr.path().is_ident("sea_orm_ext")
-                || attr.path().is_ident("summer_sea_orm_ext")
+                || attr.path().is_ident("sea_orm_ext")
             {
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("ignore") {
@@ -473,7 +473,7 @@ fn parse_all_simple_fields(data: &Data) -> syn::Result<Vec<SimpleFieldInfo>> {
         for attr in field.attrs.iter() {
             if attr.path().is_ident("sea_orm")
                 || attr.path().is_ident("sea_orm_ext")
-                || attr.path().is_ident("summer_sea_orm_ext")
+                || attr.path().is_ident("sea_orm_ext")
             {
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("ignore") {
@@ -512,7 +512,7 @@ fn parse_all_simple_fields(data: &Data) -> syn::Result<Vec<SimpleFieldInfo>> {
 /// 解析主键字段
 ///
 /// 查找同时标注了 `#[sea_orm(primary)]` 和 `#[sea_orm(auto_generate)]` 的字段，
-/// 该字段将在 insert 时通过 `summer_sea_orm_ext::get_id_generator()` 自动生成 ID。
+/// 该字段将在 insert 时通过 `sea_orm_ext::get_id_generator()` 自动生成 ID。
 fn parse_primary_key(data: &Data) -> syn::Result<Option<PrimaryKeyInfo>> {
     let fields = match data {
         Data::Struct(DataStruct {
@@ -661,7 +661,7 @@ fn parse_tenant_field(data: &Data) -> syn::Result<Option<TenantFieldInfo>> {
         };
 
         for attr in field.attrs.iter() {
-            if attr.path().is_ident("sea_orm_ext") || attr.path().is_ident("summer_sea_orm_ext") {
+            if attr.path().is_ident("sea_orm_ext") || attr.path().is_ident("sea_orm_ext") {
                 let mut is_tenant = false;
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("TENANT") {
@@ -824,7 +824,7 @@ fn expand_before_save_body(
         };
         statements.push(quote! {
             if insert && am.#field_ident.is_not_set() {
-                if let Some(gen) = ::summer_sea_orm_ext::get_id_generator() {
+                if let Some(gen) = ::sea_orm_ext::get_id_generator() {
                     let entity_name = <Entity as sea_orm::EntityName>::table_name(&Entity::default());
                     let val = if let Some(typed_val) = gen.generate_for_type(entity_name, stringify!(#field_ident), #field_type_str) {
                         typed_val
@@ -857,11 +857,11 @@ fn expand_before_save_body(
 
             // 调用全局 FieldFillHandler 获取填充值
             let fill_code = quote! {
-                if let Some(handler) = ::summer_sea_orm_ext::get_field_fill_handler() {
+                if let Some(handler) = ::sea_orm_ext::get_field_fill_handler() {
                     let op = if insert {
-                        ::summer_sea_orm_ext::FieldFillOperation::Insert
+                        ::sea_orm_ext::FieldFillOperation::Insert
                     } else {
-                        ::summer_sea_orm_ext::FieldFillOperation::Update
+                        ::sea_orm_ext::FieldFillOperation::Update
                     };
                     if let Some(val) = handler.fill(
                         <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
@@ -915,11 +915,11 @@ fn expand_before_save_body(
             quote! { sea_orm::Set(v) }
         };
         statements.push(quote! {
-            if ::summer_sea_orm_ext::is_tenant_enforced()
+            if ::sea_orm_ext::is_tenant_enforced()
                 && am.#field_ident.is_not_set()
-                && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+                && !::sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
             {
-                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
+                let tenant_id = ::sea_orm_ext::try_get_tenant_id()?;
                 let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(tenant_id)
                     .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
                 am.#field_ident = #set_code;
@@ -968,7 +968,7 @@ fn expand_soft_delete_trait_impl(sd: &SoftDeleteFieldInfo) -> TokenStream {
 
     quote! {
         #[automatically_derived]
-        impl ::summer_sea_orm_ext::SoftDeleteTrait for Entity {
+        impl ::sea_orm_ext::SoftDeleteTrait for Entity {
             fn soft_delete_default() -> sea_query::Value {
                 (#default_value as #field_type).into()
             }
@@ -1024,8 +1024,8 @@ fn expand_find_methods(
         let column_ident = &t.column_ident;
 
         let tenant_filter = quote! {
-            if ::summer_sea_orm_ext::is_tenant_enforced() && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
-                let tenant_id = ::summer_sea_orm_ext::require_tenant_id();
+            if ::sea_orm_ext::is_tenant_enforced() && !::sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref()) {
+                let tenant_id = ::sea_orm_ext::require_tenant_id();
                 select = select.filter(Column::#column_ident.eq(tenant_id));
             }
         };
@@ -1145,10 +1145,10 @@ fn expand_update_delete_methods(tenant_field: &Option<TenantFieldInfo>) -> Token
             /// 需要跨租户更新时请使用 [`Entity::update_many_without_tenant()`]。
             pub fn update_many() -> sea_orm::UpdateMany<Entity> {
                 let mut stmt = <Entity as sea_orm::EntityTrait>::update_many();
-                if ::summer_sea_orm_ext::is_tenant_enforced()
-                    && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+                if ::sea_orm_ext::is_tenant_enforced()
+                    && !::sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
                 {
-                    let tenant_id = ::summer_sea_orm_ext::require_tenant_id();
+                    let tenant_id = ::sea_orm_ext::require_tenant_id();
                     stmt = stmt.filter(Column::#column_ident.eq(tenant_id));
                 }
                 stmt
@@ -1161,10 +1161,10 @@ fn expand_update_delete_methods(tenant_field: &Option<TenantFieldInfo>) -> Token
             /// 需要跨租户删除时请使用 [`Entity::delete_many_without_tenant()`]。
             pub fn delete_many() -> sea_orm::DeleteMany<Entity> {
                 let mut stmt = <Entity as sea_orm::EntityTrait>::delete_many();
-                if ::summer_sea_orm_ext::is_tenant_enforced()
-                    && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+                if ::sea_orm_ext::is_tenant_enforced()
+                    && !::sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
                 {
-                    let tenant_id = ::summer_sea_orm_ext::require_tenant_id();
+                    let tenant_id = ::sea_orm_ext::require_tenant_id();
                     stmt = stmt.filter(Column::#column_ident.eq(tenant_id));
                 }
                 stmt
@@ -1197,7 +1197,7 @@ fn expand_tenant_trait_impl(t: &TenantFieldInfo) -> TokenStream {
 
     quote! {
         #[automatically_derived]
-        impl ::summer_sea_orm_ext::TenantEntity for Entity {
+        impl ::sea_orm_ext::TenantEntity for Entity {
             type TenantColumn = Column;
             fn tenant_column() -> Self::TenantColumn {
                 Column::#column_ident
@@ -1251,7 +1251,7 @@ fn expand_batch_insert_method(
         };
         quote! {
             if am.#field_ident.is_not_set() {
-                if let Some(gen) = ::summer_sea_orm_ext::get_id_generator() {
+                if let Some(gen) = ::sea_orm_ext::get_id_generator() {
                     let entity_name = <Entity as sea_orm::EntityName>::table_name(&Entity::default());
                     let val = if let Some(typed_val) = gen.generate_for_type(entity_name, stringify!(#field_ident), #field_type_str) {
                         typed_val
@@ -1289,11 +1289,11 @@ fn expand_batch_insert_method(
                     quote! { sea_orm::Set(v) }
                 };
                 quote! {
-                    if let Some(handler) = ::summer_sea_orm_ext::get_field_fill_handler() {
+                    if let Some(handler) = ::sea_orm_ext::get_field_fill_handler() {
                         if let Some(val) = handler.fill(
                             <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
                             #field_name,
-                            ::summer_sea_orm_ext::FieldFillOperation::Insert,
+                            ::sea_orm_ext::FieldFillOperation::Insert,
                         ) {
                             let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(val)
                                 .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
@@ -1319,11 +1319,11 @@ fn expand_batch_insert_method(
             quote! { sea_orm::Set(v) }
         };
         quote! {
-            if ::summer_sea_orm_ext::is_tenant_enforced()
+            if ::sea_orm_ext::is_tenant_enforced()
                 && am.#field_ident.is_not_set()
-                && !::summer_sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
+                && !::sea_orm_ext::is_table_tenant_ignored(<Entity as sea_orm::EntityName>::table_name(&Entity::default()).as_ref())
             {
-                let tenant_id = ::summer_sea_orm_ext::try_get_tenant_id()?;
+                let tenant_id = ::sea_orm_ext::try_get_tenant_id()?;
                 let v = <#field_type as sea_orm::sea_query::ValueType>::try_from(tenant_id)
                     .map_err(|e| sea_orm::DbErr::Type(e.to_string()))?;
                 am.#field_ident = #set_code;
@@ -1350,8 +1350,8 @@ fn expand_batch_insert_method(
                     return Ok(Vec::new());
                 }
                 // 循环外一次性获取 fill handler 和 id generator 的 Arc，避免循环中被替换
-                let _fill_handler = ::summer_sea_orm_ext::get_field_fill_handler();
-                let _id_generator = ::summer_sea_orm_ext::get_id_generator();
+                let _fill_handler = ::sea_orm_ext::get_field_fill_handler();
+                let _id_generator = ::sea_orm_ext::get_id_generator();
                 let mut processed = Vec::with_capacity(models.len());
                 for mut am in models {
                     #id_gen_block
@@ -1373,8 +1373,8 @@ fn expand_batch_insert_method(
                 if models.is_empty() {
                     return Ok(sea_orm::UpdateResult::default());
                 }
-                let _fill_handler = ::summer_sea_orm_ext::get_field_fill_handler();
-                let _id_generator = ::summer_sea_orm_ext::get_id_generator();
+                let _fill_handler = ::sea_orm_ext::get_field_fill_handler();
+                let _id_generator = ::sea_orm_ext::get_id_generator();
                 let mut processed = Vec::with_capacity(models.len());
                 for mut am in models {
                     #id_gen_block
@@ -1424,8 +1424,8 @@ fn expand_batch_insert_method(
                 if models.is_empty() {
                     return Ok(sea_orm::UpdateResult::default());
                 }
-                let _fill_handler = ::summer_sea_orm_ext::get_field_fill_handler();
-                let _id_generator = ::summer_sea_orm_ext::get_id_generator();
+                let _fill_handler = ::sea_orm_ext::get_field_fill_handler();
+                let _id_generator = ::sea_orm_ext::get_id_generator();
                 let mut processed = Vec::with_capacity(models.len());
                 for mut am in models {
                     #id_gen_block
@@ -1505,11 +1505,11 @@ fn expand_batch_update_method(
             let column_ident = format_ident!("{}", column_name);
             let field_name = field_ident.to_string();
             stmts.push(quote! {
-                if let Some(handler) = ::summer_sea_orm_ext::get_field_fill_handler() {
+                if let Some(handler) = ::sea_orm_ext::get_field_fill_handler() {
                     if let Some(val) = handler.fill(
                         <Entity as sea_orm::EntityName>::table_name(&Entity::default()),
                         #field_name,
-                        ::summer_sea_orm_ext::FieldFillOperation::Update,
+                        ::sea_orm_ext::FieldFillOperation::Update,
                     ) {
                         query = query.col_expr(Column::#column_ident, sea_query::Expr::Value(val));
                     }

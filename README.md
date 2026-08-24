@@ -1,4 +1,4 @@
-# summer-sea-orm-ext
+# sea-orm-ext
 
 <div align="center">
 
@@ -6,8 +6,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
-[![crates.io](https://img.shields.io/badge/crates.io-v0.0.3-orange.svg?style=for-the-badge)](https://crates.io/crates/summer-sea-orm-ext)
-[![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/summer-sea-orm-ext)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.0.3-orange.svg?style=for-the-badge)](https://crates.io/crates/sea-orm-ext)
+[![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/sea-orm-ext)
 [![Test Status](https://img.shields.io/badge/tests-162%20passed-green?style=for-the-badge)](#测试覆盖)
 
 > ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，业务层零样板代码，深度集成 Summer 框架
@@ -16,7 +16,7 @@
 
 ---
 
-## ✨ 为什么选择 summer-sea-orm-ext？
+## ✨ 为什么选择 sea-orm-ext？
 
 | 特性 | 说明 | 对比 MyBatis-Plus |
 |------|------|-------------------|
@@ -41,24 +41,24 @@
 ```toml
 [dependencies]
 # 默认：启用 runtime-tokio-native-tls
-summer-sea-orm-ext = "0.0.3"
+sea-orm-ext = "0.0.3"
 
 # 指定数据库驱动
-summer-sea-orm-ext = { version = "0.0.3", features = ["postgres"] }
-summer-sea-orm-ext = { version = "0.0.3", features = ["mysql"] }
-summer-sea-orm-ext = { version = "0.0.3", features = ["sqlite"] }
+sea-orm-ext = { version = "0.0.3", features = ["postgres"] }
+sea-orm-ext = { version = "0.0.3", features = ["mysql"] }
+sea-orm-ext = { version = "0.0.3", features = ["sqlite"] }
 
 # Summer + Web + PostgreSQL + Rustls + Chrono + OpenAPI
-summer-sea-orm-ext = { version = "0.0.3", features = [
+sea-orm-ext = { version = "0.0.3", features = [
     "summer", "summer-web", "postgres", "rustls",
     "with-chrono", "with-uuid", "openapi"
 ] }
 
 # 启用全部功能
-summer-sea-orm-ext = { version = "0.0.3", features = ["full"] }
+sea-orm-ext = { version = "0.0.3", features = ["full"] }
 ```
 
-> 💡 **无需单独引入** `sea-orm`、`sea-query`、`summer`、`summer-web`，`summer-sea-orm-ext` 已 re-export 所有依赖。
+> 💡 **无需单独引入** `sea-orm`、`sea-query`、`summer`、`summer-web`，`sea-orm-ext` 已 re-export 所有依赖。
 
 ### Feature Flags
 
@@ -149,7 +149,7 @@ summer-sea-orm-ext = { version = "0.0.3", features = ["full"] }
 ### 1. 定义实体（3 行注解 = 全功能）
 
 ```rust
-use summer_sea_orm_ext::sea_orm::entity::prelude::*;
+use sea_orm_ext::sea_orm::entity::prelude::*;
 
 // 一行注解 = 自动填充 + 软删除 + 多租户
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDeleteTenant)]
@@ -162,9 +162,9 @@ pub struct Model {
     pub quantity: i32,
 
     // 🔽 自动填充字段
-    #[summer_sea_orm_ext(insert)]
+    #[sea_orm_ext(insert)]
     pub created_by: Option<String>,
-    #[summer_sea_orm_ext(update)]
+    #[sea_orm_ext(update)]
     pub updated_by: Option<String>,
 
     // 🔽 软删除字段
@@ -172,7 +172,7 @@ pub struct Model {
     pub is_deleted: i32,
 
     // 🔽 租户隔离字段
-    #[summer_sea_orm_ext(TENANT)]
+    #[sea_orm_ext(TENANT)]
     pub tenant_id: Option<String>,
 }
 
@@ -183,7 +183,7 @@ pub enum Relation {}
 ### 2. 设置全局处理器（一次配置，永久生效）
 
 ```rust
-use summer_sea_orm_ext::*;
+use sea_orm_ext::*;
 
 // ID 生成器：Snowflake 算法
 set_id_generator(Box::new(SnowflakeIdGenerator::new(1)));
@@ -216,7 +216,7 @@ enable_sql_log();
 ### 3. CRUD 操作（零改动，自动生效）
 
 ```rust
-use summer_sea_orm_ext::sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm_ext::sea_orm::{ActiveModelTrait, EntityTrait, Set};
 
 // ✅ INSERT：自动填充 created_by + tenant_id
 let order = orders::ActiveModel {
@@ -326,9 +326,9 @@ impl TenantIdProvider for MyTenantIdProvider {
 通过实现 `DynamicTenantConfigProvider` trait，从主库查询租户配置，框架自动建立连接、缓存、健康检查：
 
 ```rust
-use summer_sea_orm_ext::dynamic_tenant::*;
-use summer_sea_orm_ext::sea_orm::DatabaseConnection;
-use summer_sea_orm_ext::SeaOrmExtError;
+use sea_orm_ext::dynamic_tenant::*;
+use sea_orm_ext::sea_orm::DatabaseConnection;
+use sea_orm_ext::SeaOrmExtError;
 
 /// 用户实现：从主库的 sys_tenant 表查询租户连接配置
 struct MyDynamicConfigProvider;
@@ -369,7 +369,7 @@ impl DynamicTenantConfigProvider for MyDynamicConfigProvider {
 运行时动态管理租户：
 
 ```rust
-use summer_sea_orm_ext::dynamic_tenant::TenantManager;
+use sea_orm_ext::dynamic_tenant::TenantManager;
 
 // 通过依赖注入获取 TenantManager
 #[inject(component)]
@@ -393,8 +393,8 @@ manager.refresh_cache().await?;
 通过实现 `TenantIdCodec` trait，前端传入加密后的 tenant_id，后端自动解密：
 
 ```rust
-use summer_sea_orm_ext::{TenantIdCodec, set_tenant_id_codec};
-use summer_sea_orm_ext::sea_query::Value;
+use sea_orm_ext::{TenantIdCodec, set_tenant_id_codec};
+use sea_orm_ext::sea_query::Value;
 use std::sync::Arc;
 
 /// 自定义加解密实现（示例：AES、JWT、Base64 等）
@@ -431,7 +431,7 @@ set_tenant_id_codec(Arc::new(AesCodec));
 标记 async handler，自动跳过租户 WHERE 过滤，适用于跨租户聚合查询、系统配置读取等场景：
 
 ```rust
-use summer_sea_orm_ext::ignore_tenant;
+use sea_orm_ext::ignore_tenant;
 
 /// 跨租户统计：所有租户的订单总数
 #[ignore_tenant]
@@ -464,7 +464,7 @@ async fn get_system_config(db: &DbConn, key: &str) -> Option<String> {
 
 ```rust
 // main.rs
-use summer_sea_orm_ext::plugin::*;
+use sea_orm_ext::plugin::*;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -493,7 +493,7 @@ async fn main() -> anyhow::Result<()> {
 
 `SeaOrmPlugin` 整合了数据库连接创建、SQL 日志、字段填充、ID 生成四大功能：
 
-- 从 `[summer-sea-orm-ext]` 配置创建数据库连接
+- 从 `[sea-orm-ext]` 配置创建数据库连接
 - 注册 `DatabaseConnection` 和 `SeaOrmExtConnection` 组件
 - `enable_sql_log = true` 开启完整 SQL 日志（含参数值注入 + 参数列表）
 - 自动注册字段填充处理器和 ID 生成器
@@ -530,7 +530,7 @@ async fn list_orders(TenantDb(db): TenantDb) -> Result<Json<Vec<Order>>, StatusC
 
 ```toml
 # 数据库配置（连接 + SQL 日志 + 字段填充）
-[summer-sea-orm-ext]
+[sea-orm-ext]
 uri = "postgres://user:pass@localhost:5432/mydb"
 enable_sql_log = true
 min_connections = 1
@@ -541,7 +541,7 @@ acquire_timeout = 30000
 default_user = "system"
 
 # 多租户配置
-[summer-sea-orm-ext-tenant]
+[sea-orm-ext-tenant]
 enabled = true
 mode = "database"             # "table" 或 "database"
 database_source = "config"    # "config"（静态 TOML）或留空配合 DynamicTenantPlugin
@@ -552,29 +552,29 @@ max_retries = 3               # 连接失败重试次数（指数退避）
 ignored_tables = ["sys_dict", "sys_config"]  # 忽略租户过滤的表
 
 # 默认数据库 fallback 链（主库故障时按顺序尝试）
-[[summer-sea-orm-ext-tenant.default_databases]]
+[[sea-orm-ext-tenant.default_databases]]
 url = "postgres://user:pass@localhost:5432/default_db"
 max_connections = 50
 
-[[summer-sea-orm-ext-tenant.default_databases]]
+[[sea-orm-ext-tenant.default_databases]]
 url = "postgres://user:pass@localhost:5432/default_db_fallback"
 max_connections = 20
 
 # 静态租户数据库配置（database_source = "config" 时使用）
-[[summer-sea-orm-ext-tenant.databases]]
+[[sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000001"
-[summer-sea-orm-ext-tenant.databases.database]
+[sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_1"
 max_connections = 20
 
-[[summer-sea-orm-ext-tenant.databases]]
+[[sea-orm-ext-tenant.databases]]
 tenant_id = "1876543210000000002"
-[summer-sea-orm-ext-tenant.databases.database]
+[sea-orm-ext-tenant.databases.database]
 url = "postgres://user:pass@localhost:5432/tenant_2"
 max_connections = 20
 
 # 动态租户管理配置（Database 模式 + DynamicTenantPlugin 时生效）
-[summer-sea-orm-ext-dynamic-tenant]
+[sea-orm-ext-dynamic-tenant]
 enabled = true
 health_check_interval_secs = 60     # 健康检查间隔
 health_check_failure_threshold = 3  # 连续失败阈值，达到后自动移除
@@ -584,9 +584,9 @@ auto_remove_on_failure = true       # 是否自动移除失败的租户连接
 ### TenantIdProvider 实现
 
 ```rust
-use summer_sea_orm_ext::{TenantIdProvider, TenantDatabaseProvider};
-use summer_sea_orm_ext::sea_orm::ConnectOptions;
-use summer_sea_orm_ext::sea_query::Value;
+use sea_orm_ext::{TenantIdProvider, TenantDatabaseProvider};
+use sea_orm_ext::sea_orm::ConnectOptions;
+use sea_orm_ext::sea_query::Value;
 use std::collections::HashMap;
 
 // 🔷 从请求上下文获取租户 ID（如 JWT、Header）
@@ -613,7 +613,7 @@ impl TenantDatabaseProvider for ConfigTenantDatabaseProvider {
 
 ## 🔗 Re-export 机制
 
-`summer-sea-orm-ext` 重新导出了所有依赖 crate，使用时只需引入一个依赖：
+`sea-orm-ext` 重新导出了所有依赖 crate，使用时只需引入一个依赖：
 
 | Re-export | 条件 | 说明 |
 |-----------|------|------|
@@ -625,9 +625,9 @@ impl TenantDatabaseProvider for ConfigTenantDatabaseProvider {
 
 ```rust
 // 无需单独引入 sea-orm、summer-web 等
-use summer_sea_orm_ext::sea_orm::EntityTrait;
-use summer_sea_orm_ext::summer_web::SomeType;
-use summer_sea_orm_ext::{DbConn, SeaOrmExtConnection, SoftDelete};
+use sea_orm_ext::sea_orm::EntityTrait;
+use sea_orm_ext::summer_web::SomeType;
+use sea_orm_ext::{DbConn, SeaOrmExtConnection, SoftDelete};
 ```
 
 ---
@@ -646,12 +646,12 @@ use summer_sea_orm_ext::{DbConn, SeaOrmExtConnection, SoftDelete};
 **日志输出示例**：
 
 ```
-[summer-sea-orm-ext SQL] SELECT "order"."id", "order"."product_name", "order"."quantity" FROM "order" WHERE "order"."is_deleted" = 0 AND "order"."tenant_id" = '1'
-[summer-sea-orm-ext Params] [Int(Some(0)), String(Some("1"))]
+[sea-orm-ext SQL] SELECT "order"."id", "order"."product_name", "order"."quantity" FROM "order" WHERE "order"."is_deleted" = 0 AND "order"."tenant_id" = '1'
+[sea-orm-ext Params] [Int(Some(0)), String(Some("1"))]
 ```
 
 ```rust
-use summer_sea_orm_ext::{DbConn, enable_sql_log, disable_sql_log};
+use sea_orm_ext::{DbConn, enable_sql_log, disable_sql_log};
 
 // DbConn = SeaOrmExtConnection
 #[inject(component)]
@@ -680,7 +680,7 @@ let ext_conn: SeaOrmExtConnection = store.get_ext(&tenant_id).unwrap();
 ## 📄 分页查询
 
 ```rust
-use summer_sea_orm_ext::{Pagination, PaginationExt, Page};
+use sea_orm_ext::{Pagination, PaginationExt, Page};
 
 // 基础分页
 let pagination = Pagination { page: 0, size: 20, one_indexed: false };
@@ -697,7 +697,7 @@ async fn list_orders(pagination: Pagination, TenantDb(db): TenantDb) -> Result<J
 ### SeaOrmWebConfig
 
 ```toml
-[summer-sea-orm-ext-web]
+[sea-orm-ext-web]
 one_indexed = false
 default_page_size = 20
 max_page_size = 2000
@@ -721,10 +721,10 @@ max_page_size = 2000
 | 宏 | 作用目标 | 功能 |
 |----|---------|------|
 | `#[ignore_tenant]` | `async fn` | 包入 `TenantIgnoreGuard`，函数体内跳过租户 WHERE 过滤；返回时自动恢复 |
-| `#[summer_sea_orm_ext(insert)]` | 字段 | INSERT 时自动填充 |
-| `#[summer_sea_orm_ext(update)]` | 字段 | UPDATE 时自动填充 |
-| `#[summer_sea_orm_ext(insert_update)]` | 字段 | INSERT 和 UPDATE 时都填充 |
-| `#[summer_sea_orm_ext(TENANT)]` | 字段 | 标记为租户隔离字段 |
+| `#[sea_orm_ext(insert)]` | 字段 | INSERT 时自动填充 |
+| `#[sea_orm_ext(update)]` | 字段 | UPDATE 时自动填充 |
+| `#[sea_orm_ext(insert_update)]` | 字段 | INSERT 和 UPDATE 时都填充 |
+| `#[sea_orm_ext(TENANT)]` | 字段 | 标记为租户隔离字段 |
 | `#[soft_delete(default = 0, del = 1)]` | 字段 | 标记为软删除字段 |
 
 ### 生成的 CRUD 方法
@@ -752,13 +752,13 @@ max_page_size = 2000
 
 ```rust
 // 1. 默认自增 ID
-summer_sea_orm_ext::set_id_generator(Box::new(DefaultIdGenerator::default()));
+sea_orm_ext::set_id_generator(Box::new(DefaultIdGenerator::default()));
 
 // 2. UUID
-summer_sea_orm_ext::set_id_generator(Box::new(UuidIdGenerator::new()));
+sea_orm_ext::set_id_generator(Box::new(UuidIdGenerator::new()));
 
 // 3. Snowflake 分布式 ID
-summer_sea_orm_ext::set_id_generator(Box::new(SnowflakeIdGenerator::new(1)));
+sea_orm_ext::set_id_generator(Box::new(SnowflakeIdGenerator::new(1)));
 
 // 4. 自定义
 struct MyGenerator;
@@ -768,7 +768,7 @@ impl IdGenerator for MyGenerator {
         // 智能类型适配
     }
 }
-summer_sea_orm_ext::set_id_generator(Box::new(MyGenerator));
+sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 ```
 
 ---
@@ -794,7 +794,7 @@ cargo test --workspace --features full
 ## 📚 文档
 
 - [中文文档 (WIP)](https://summer-rs.github.io)
-- [API 文档](https://docs.rs/summer-sea-orm-ext)
+- [API 文档](https://docs.rs/sea-orm-ext)
 - [Summer 框架](https://summer-rs.github.io/zh/)
 
 ---

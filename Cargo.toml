@@ -1,11 +1,11 @@
 [package]
-name = "summer-sea-orm-ext"
+name = "sea-orm-ext"
 version = "0.0.4"
 edition = "2021"
 rust-version = "1.81"
 description = "SeaORM non-invasive extension: auto-fill, soft-delete, multi-tenant, with Summer plugin support"
 license = "MIT"
-repository = "https://github.com/user/summer-sea-orm-ext"
+repository = "https://github.com/tttq/sea-orm-ext"
 keywords = ["sea-orm", "orm", "multi-tenant", "soft-delete", "auto-fill"]
 categories = ["database"]
 
@@ -89,7 +89,7 @@ full = ["summer", "summer-web", "runtime-tokio"]
 [dependencies]
 sea-orm = { version = "2.0.0", features = ["macros", "mock"] }
 sea-query = "1.0.1"
-summer-sea-orm-ext-macros = { path = "summer-sea-orm-ext-macros" }
+sea-orm-ext-macros = { path = "sea-orm-ext-macros" }
 
 async-trait = "0.1"
 thiserror = "2"
@@ -116,8 +116,8 @@ tracing = "0.1"
 serial_test = "2"
 
 [[example]]
-name = "summer-tenant-example"
-path = "examples/summer-tenant-example.rs"
+name = "sea-orm-tenant-example"
+path = "examples/sea-orm-tenant-example.rs"
 required-features = ["full"]
 
 [[test]]

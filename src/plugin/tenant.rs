@@ -181,7 +181,7 @@ impl TenantDatabaseProviderComponent {
     }
 }
 #[derive(Clone, Serialize, Deserialize,JsonSchema, Configurable)]
-#[config_prefix = "summer-sea-orm-ext-tenant"]
+#[config_prefix = "sea-orm-ext-tenant"]
 pub struct TenantPluginConfig {
     pub enabled: bool,
     pub mode: String,
@@ -193,15 +193,15 @@ pub struct TenantPluginConfig {
     ///
     /// TOML 中使用数组表语法，可定义多个：
     /// ```toml
-    /// [[summer-sea-orm-ext-tenant.default_databases]]
+    /// [[sea-orm-ext-tenant.default_databases]]
     /// url = "postgres://..."
     ///
-    /// [[summer-sea-orm-ext-tenant.default_databases]]
+    /// [[sea-orm-ext-tenant.default_databases]]
     /// url = "postgres://..."
     /// ```
     ///
     /// `#[serde(deserialize_with = "single_or_vec", alias = "default_database")]`
-    /// 同时兼容旧的单数 `[summer-sea-orm-ext-tenant.default_database]` 写法（会被解析为单元素列表）。
+    /// 同时兼容旧的单数 `[sea-orm-ext-tenant.default_database]` 写法（会被解析为单元素列表）。
     /// 注意：TOML 标准不允许同一个 `[table]` 表头重复定义，若需配置多个，请使用 `default_databases` 数组表语法。
     #[serde(default, deserialize_with = "crate::config::single_or_vec", alias = "default_database")]
     pub default_databases: Option<Vec<TenantDatabaseEntryConfig>>,
@@ -215,7 +215,7 @@ pub struct TenantPluginConfig {
     /// # TOML 用法
     ///
     /// ```toml
-    /// [summer-sea-orm-ext-tenant]
+    /// [sea-orm-ext-tenant]
     /// ignored_tables = ["sys_dict", "sys_config", "sys_log"]
     /// ```
     #[serde(default)]
@@ -228,7 +228,7 @@ pub struct TenantPluginConfig {
     /// # TOML 用法
     ///
     /// ```toml
-    /// [summer-sea-orm-ext-tenant]
+    /// [sea-orm-ext-tenant]
     /// max_retries = 3
     /// ```
     #[serde(default)]
@@ -238,13 +238,13 @@ pub struct TenantPluginConfig {
     /// 设置为 `true` 后，所有通过 `SeaOrmExtConnection` 执行的 SQL 语句都会被
     /// 拦截并打印完整 SQL（含参数值注入）和独立参数列表，方便调试。
     ///
-    /// **与 `[summer-sea-orm-ext] enable_sql_log` 等效**，两者控制同一个全局开关。
-    /// 可以在任意一个配置块中设置，推荐在 `[summer-sea-orm-ext-tenant]` 中统一配置。
+    /// **与 `[sea-orm-ext] enable_sql_log` 等效**，两者控制同一个全局开关。
+    /// 可以在任意一个配置块中设置，推荐在 `[sea-orm-ext-tenant]` 中统一配置。
     ///
     /// # TOML 用法
     ///
     /// ```toml
-    /// [summer-sea-orm-ext-tenant]
+    /// [sea-orm-ext-tenant]
     /// enable_sql_log = true
     /// ```
     #[serde(default)]
@@ -257,7 +257,7 @@ pub struct TenantPluginConfig {
     /// # TOML 用法
     ///
     /// ```toml
-    /// [summer-sea-orm-ext-tenant]
+    /// [sea-orm-ext-tenant]
     /// tenant_id_header = "X-Tenant-Id"
     /// ```
     #[serde(default)]
@@ -427,12 +427,12 @@ impl Plugin for TenantPlugin {
             );
         }
 
-        // SQL 日志开关：与 [summer-sea-orm-ext] enable_sql_log 等效，控制同一个全局开关
+        // SQL 日志开关：与 [sea-orm-ext] enable_sql_log 等效，控制同一个全局开关
         if config.enable_sql_log {
             crate::set_sql_log_enabled(true);
-            tracing::info!("[summer-sea-orm-ext-tenant] SQL log enabled (complete SQL with parameters)");
+            tracing::info!("[sea-orm-ext-tenant] SQL log enabled (complete SQL with parameters)");
         } else {
-            tracing::debug!("[summer-sea-orm-ext-tenant] SQL log disabled (set enable_sql_log = true to enable)");
+            tracing::debug!("[sea-orm-ext-tenant] SQL log disabled (set enable_sql_log = true to enable)");
         }
 
         if let Some(db) = app.get_component::<DatabaseConnection>() {
@@ -634,14 +634,14 @@ impl Plugin for TenantPlugin {
     }
 
     fn name(&self) -> &'static str {
-        "summer-sea-orm-ext-tenant"
+        "sea-orm-ext-tenant"
     }
 
     /// 依赖 `SeaOrmPlugin`：本插件在 build 时会读取主库 `DatabaseConnection` 组件
     /// 用作默认数据库 fallback。Summer 框架按依赖拓扑排序构建插件，未声明依赖时
     /// 构建顺序由 DashMap 哈希决定，无法保证 SeaOrmPlugin 先构建。
     fn dependencies(&self) -> Vec<&str> {
-        vec!["summer-sea-orm-ext"]
+        vec!["sea-orm-ext"]
     }
 }
 

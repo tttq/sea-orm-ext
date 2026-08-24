@@ -8,7 +8,7 @@ At line:15 char:7473
 error: failed to select a version for the requirement `sea-orm = "^2.0.0"`
 candidate versions found which didn't match: 2.0.0-rc.43, 2.0.0-rc.42, 2.0.0-rc.41, ...
 location searched: `tuna` index (which is replacing registry `crates-io`)
-required by package `summer-sea-orm-ext v0.0.1 (D:\Projcets\Rust\summer-sea-orm-ext)`
+required by package `sea-orm-ext v0.0.1 (D:\Projcets\Rust\sea-orm-ext)`
 if you are looking for the prerelease package it needs to be specified explicitly
     sea-orm = { version = "2.0.0-rc.43" }
 perhaps a crate was updated and forgotten to be re-vendored?

@@ -10,7 +10,7 @@
 //! ## TOML 配置
 //!
 //! ```toml
-//! [summer-sea-orm-ext-dynamic-tenant]
+//! [sea-orm-ext-dynamic-tenant]
 //! enabled = true
 //! health_check_interval_secs = 60
 //! health_check_failure_threshold = 3
@@ -21,10 +21,10 @@
 //!
 //! ```ignore
 //! use async_trait::async_trait;
-//! use summer_sea_orm_ext::plugin::dynamic_tenant::{
+//! use sea_orm_ext::plugin::dynamic_tenant::{
 //!     DynamicTenantPlugin, DynamicTenantConfigProviderComponent,
 //! };
-//! use summer_sea_orm_ext::{DynamicTenantConfigProvider, TenantConnectionConfig};
+//! use sea_orm_ext::{DynamicTenantConfigProvider, TenantConnectionConfig};
 //! use summer::App;
 //! use summer::plugin::MutableComponentRegistry;
 //!
@@ -98,13 +98,13 @@ impl TenantManagerComponent {
     }
 }
 
-summer::submit_config_schema!("summer-sea-orm-ext-dynamic-tenant", DynamicTenantPluginConfig);
+summer::submit_config_schema!("sea-orm-ext-dynamic-tenant", DynamicTenantPluginConfig);
 
 /// 动态租户插件配置
 ///
-/// 对应 TOML 配置 `[summer-sea-orm-ext-dynamic-tenant]` 段。
+/// 对应 TOML 配置 `[sea-orm-ext-dynamic-tenant]` 段。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, Configurable)]
-#[config_prefix = "summer-sea-orm-ext-dynamic-tenant"]
+#[config_prefix = "sea-orm-ext-dynamic-tenant"]
 pub struct DynamicTenantPluginConfig {
     /// 是否启用动态租户管理（默认 false）
     #[serde(default)]
@@ -249,7 +249,7 @@ impl Plugin for DynamicTenantPlugin {
     }
 
     fn name(&self) -> &'static str {
-        "summer-sea-orm-ext-dynamic-tenant"
+        "sea-orm-ext-dynamic-tenant"
     }
 
     /// 依赖 `SeaOrmPlugin`（提供主库 `DatabaseConnection`）和 `TenantPlugin`
@@ -257,6 +257,6 @@ impl Plugin for DynamicTenantPlugin {
     /// 未声明依赖时构建顺序由 DashMap 哈希决定，无法保证前置插件先构建，
     /// 会导致启动时找不到 DatabaseConnection 组件。
     fn dependencies(&self) -> Vec<&str> {
-        vec!["summer-sea-orm-ext", "summer-sea-orm-ext-tenant"]
+        vec!["sea-orm-ext", "sea-orm-ext-tenant"]
     }
 }

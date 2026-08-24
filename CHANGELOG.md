@@ -72,7 +72,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 新增 `TenantConnectionConfig`：框架定义的连接配置结构，与用户 Entity 解耦
   - 后台健康检查任务（`runtime-tokio` feature）：定时 ping 所有租户库，连续失败达阈值自动从缓存移除
   - 新增 `DynamicTenantPlugin` Summer 插件：自动初始化、注册 `TenantManagerComponent` 供业务层依赖注入
-  - 新增 `[summer-sea-orm-ext-dynamic-tenant]` TOML 配置段：`enabled` / `health_check_interval_secs` / `health_check_failure_threshold` / `auto_remove_on_failure`
+  - 新增 `[sea-orm-ext-dynamic-tenant]` TOML 配置段：`enabled` / `health_check_interval_secs` / `health_check_failure_threshold` / `auto_remove_on_failure`
 - **租户 ID 加解密（`TenantIdCodec` trait）**：支持前端传入加密后的 tenant_id，后端解密后再使用
   - 新增 `TenantIdCodec` trait：`decrypt()` / `encrypt()` 两个方法
   - 新增 `set_tenant_id_codec()` / `get_tenant_id_codec()` / `clear_tenant_id_codec()` 全局注册函数
@@ -89,7 +89,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 新增 `TenantPluginConfig.tenant_id_header` 配置字段：设置后中间件从指定 Header 提取 tenant_id
   - 优先级：HTTP Header > `TenantIdProvider` > `default_tenant_id`
   - 全局缓存 header 名称（`set_tenant_header_name()`），避免每次请求读取配置
-- **TenantPluginConfig 新增 `enable_sql_log` 字段**：支持在 `[summer-sea-orm-ext-tenant]` 配置块中开启 SQL 日志，与 `[summer-sea-orm-ext] enable_sql_log` 等效，控制同一个全局开关
+- **TenantPluginConfig 新增 `enable_sql_log` 字段**：支持在 `[sea-orm-ext-tenant]` 配置块中开启 SQL 日志，与 `[sea-orm-ext] enable_sql_log` 等效，控制同一个全局开关
 - **`default_databases` 存储升级为 `SeaOrmExtConnection`**：内部存储改为 `Vec<SeaOrmExtConnection>`，支持 SQL 日志拦截和重试配置
   - 新增 `set_default_databases_ext()` / `get_default_databases_ext()` / `get_available_default_database_ext()` ext 版本函数
   - 原 `set_default_databases()` / `get_default_databases()` / `get_available_default_database()` 保持向后兼容，自动包装/解包 `SeaOrmExtConnection`
@@ -117,9 +117,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **项目重命名**：从 `sea-orm-ext` 重命名为 `summer-sea-orm-ext`，更清晰地表达与 Summer 框架的深度集成关系
-- **Re-export 机制**：重新导出 `sea_orm`、`sea_query`、`summer`（cfg feature）、`summer_web`（cfg feature）、`tower`（cfg feature），用户只需引入 `summer-sea-orm-ext` 一个依赖
-- **Feature 透传**：完整透传 `sea-orm` 和 `summer-web` 的所有 features，通过配置 `summer-sea-orm-ext` 的 features 即可控制所有依赖
+- **项目重命名**：从 `sea-orm-ext` 重命名为 `sea-orm-ext`，更清晰地表达与 Summer 框架的深度集成关系
+- **Re-export 机制**：重新导出 `sea_orm`、`sea_query`、`summer`（cfg feature）、`summer_web`（cfg feature）、`tower`（cfg feature），用户只需引入 `sea-orm-ext` 一个依赖
+- **Feature 透传**：完整透传 `sea-orm` 和 `summer-web` 的所有 features，通过配置 `sea-orm-ext` 的 features 即可控制所有依赖
   - sea-orm 类型支持：`with-json`、`with-chrono`、`with-rust_decimal`、`with-uuid`、`with-time`、`with-bigdecimal`、`with-ipnetwork`、`with-mac_address`、`with-arrow`
   - sea-orm PostgreSQL 扩展：`postgres-array`、`postgres-use-serial-pk`、`postgres-vector`、`json-array`
   - sea-orm SQLite/MariaDB 扩展：`sqlite-use-returning-for-3_35`、`sqlite-no-row-value-before-3_15`、`mariadb-use-returning`
@@ -136,11 +136,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `SeaOrmWebConfig`（summer-web feature）：从请求参数自动解析分页
   - `summer-web-openapi` feature：OpenAPI 分页参数文档支持
 - **合并插件**：将 `SeaOrmPlugin`（数据库连接）和 `SeaOrmExtPlugin`（字段填充/ID生成/SQL日志）合并为统一的 `SeaOrmPlugin`
-- **SQL 日志增强**：`log_statement` 使用 `sea_query::inject_parameters` 将参数值注入 SQL 生成完整可执行语句，同时打印独立参数列表 `[summer-sea-orm-ext Params]`
+- **SQL 日志增强**：`log_statement` 使用 `sea_query::inject_parameters` 将参数值注入 SQL 生成完整可执行语句，同时打印独立参数列表 `[sea-orm-ext Params]`
 - **派生宏**：
   - `DeriveAutoFill`、`DeriveSoftDelete`、`DeriveAutoFillSoftDelete`
   - `DeriveTenant`、`DeriveAutoFillTenant`、`DeriveAutoFillSoftDeleteTenant`
-  - 宏属性从 `#[sea_orm_ext(...)]` 更名为 `#[summer_sea_orm_ext(...)]`
+  - 宏属性从 `#[sea_orm_ext(...)]` 更名为 `#[sea_orm_ext(...)]`
 - **自动字段填充 (Auto-Fill)**：INSERT/UPDATE 时自动填充审计字段，通过 `FieldFillHandler` trait 外部实现
 - **软删除 (Soft-Delete)**：DELETE 操作拦截为逻辑删除，`find()` 自动过滤已删除记录
 - **多租户 (Multi-Tenant)**：Table/Database 两种隔离模式
@@ -159,12 +159,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **项目名称**：`sea-orm-ext` → `summer-sea-orm-ext`
-- **Rust 模块名**：`sea_orm_ext` → `summer_sea_orm_ext`
-- **过程宏 crate**：`sea-orm-ext-macros` → `summer-sea-orm-ext-macros`
-- **宏属性**：`#[sea_orm_ext(...)]` → `#[summer_sea_orm_ext(...)]`
-- **配置前缀**：`[sea-orm-ext]` → `[summer-sea-orm-ext]`，`[sea-orm-ext-tenant]` → `[summer-sea-orm-ext-tenant]`
-- **SQL 日志前缀**：`[sea-orm-ext SQL]` → `[summer-sea-orm-ext SQL]`
+- **项目名称**：`sea-orm-ext` → `sea-orm-ext`
+- **Rust 模块名**：`sea_orm_ext` → `sea_orm_ext`
+- **过程宏 crate**：`sea-orm-ext-macros` → `sea-orm-ext-macros`
+- **宏属性**：`#[sea_orm_ext(...)]` → `#[sea_orm_ext(...)]`
+- **配置前缀**：`[sea-orm-ext]` → `[sea-orm-ext]`，`[sea-orm-ext-tenant]` → `[sea-orm-ext-tenant]`
+- **SQL 日志前缀**：`[sea-orm-ext SQL]` → `[sea-orm-ext SQL]`
 - **`DbConn` 类型**：`DbConn` = `SeaOrmExtConnection`，注入即支持完整 SQL 日志
 - **统一配置结构**：`SeaOrmConfig` 整合 `uri`、`enable_sql_log`、`min/max_connections`、`connect/idle/acquire_timeout`、`default_user`、`fill_rules`
 - **租户连接存储升级**：`ConnectionStore` 内部存储从 `DatabaseConnection` 改为 `SeaOrmExtConnection`
@@ -175,7 +175,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`SeaOrmExtPlugin`**：已合并到 `SeaOrmPlugin`
 - **`plugin/sea_orm.rs`**：独立插件文件已删除
-- **`SeaOrmConfig`（config.rs 中的旧版本）**：已迁移到 `plugin/summer_sea_orm_ext.rs`
+- **`SeaOrmConfig`（config.rs 中的旧版本）**：已迁移到 `plugin/sea_orm_ext.rs`
 - **`summer_connection` 模块**：连接创建逻辑已整合到 `SeaOrmPlugin::connect()`
 - **`LoggingConnection`**：已重命名为 `SeaOrmExtConnection`
 

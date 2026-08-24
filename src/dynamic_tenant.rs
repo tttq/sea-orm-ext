@@ -15,7 +15,7 @@
 //! ```ignore
 //! use async_trait::async_trait;
 //! use sea_orm::{DatabaseConnection, DbErr, EntityTrait, QueryFilter};
-//! use summer_sea_orm_ext::{
+//! use sea_orm_ext::{
 //!     DynamicTenantConfigProvider, TenantConnectionConfig,
 //! };
 //!
@@ -393,10 +393,10 @@ impl TenantManager {
 
 /// 动态租户管理配置
 ///
-/// 对应 TOML 配置 `[summer-sea-orm-ext-dynamic-tenant]` 段。
+/// 对应 TOML 配置 `[sea-orm-ext-dynamic-tenant]` 段。
 ///
 /// ```toml
-/// [summer-sea-orm-ext-dynamic-tenant]
+/// [sea-orm-ext-dynamic-tenant]
 /// enabled = true
 /// health_check_interval_secs = 60
 /// health_check_failure_threshold = 3

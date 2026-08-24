@@ -569,7 +569,7 @@ async fn test_batch_operations_combo() {
 // #[ignore_tenant] 属性宏测试
 // ===========================================================================
 
-use summer_sea_orm_ext::ignore_tenant;
+use sea_orm_ext::ignore_tenant;
 
 /// 测试 #[ignore_tenant] 是否能正确编译并生成 guard
 #[tokio::test]

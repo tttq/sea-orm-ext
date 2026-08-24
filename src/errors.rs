@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// `summer-sea-orm-ext` 的统一错误类型。
+/// `sea-orm-ext` 的统一错误类型。
 ///
 /// 覆盖多租户数据库连接、配置、字段填充、ID 生成等所有模块可能产生的错误。
 #[derive(Debug, Error)]
@@ -54,5 +54,5 @@ pub enum SeaOrmExtError {
     Config(String),
 }
 
-/// `summer-sea-orm-ext` 的标准 Result 类型别名。
+/// `sea-orm-ext` 的标准 Result 类型别名。
 pub type Result<T> = std::result::Result<T, SeaOrmExtError>;

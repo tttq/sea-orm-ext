@@ -6,7 +6,7 @@
 //! # 用法
 //!
 //! ```ignore
-//! use summer_sea_orm_ext::health::check_default_databases;
+//! use sea_orm_ext::health::check_default_databases;
 //!
 //! # async fn run() {
 //! let report = check_default_databases().await;

@@ -1,5 +1,5 @@
 #[cfg(feature = "summer")]
-pub mod summer_sea_orm_ext;
+pub mod sea_orm_ext;
 
 #[cfg(feature = "summer")]
 pub mod tenant;
@@ -8,7 +8,7 @@ pub mod tenant;
 pub mod dynamic_tenant;
 
 #[cfg(feature = "summer")]
-pub use summer_sea_orm_ext::*;
+pub use sea_orm_ext::*;
 
 #[cfg(feature = "summer")]
 pub use tenant::*;
