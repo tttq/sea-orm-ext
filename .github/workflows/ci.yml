@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: clippy / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --features runtime-tokio --all-targets
+      - name: Test (runtime-tokio)
+        run: cargo test --workspace --features runtime-tokio
+      - name: Test (full)
+        run: cargo test --workspace --features full
+
+  msrv:
+    name: MSRV 1.81
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --features runtime-tokio

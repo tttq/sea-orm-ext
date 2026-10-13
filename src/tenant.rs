@@ -326,9 +326,23 @@ pub async fn tenant_scope<F>(tenant_id: Value, f: F) -> F::Output
 where
     F: Future,
 {
-    let ctx = TenantContext { tenant_id };
-    TASK_TENANT_CONTEXT
-        .scope(RefCell::new(Some(ctx)), f)
+    tenant_request_scope(Some(TenantContext { tenant_id }), f).await
+}
+
+/// 在完整的"请求租户作用域"内执行 future：
+/// - 建立 `TASK_TENANT_CONTEXT`（`None` 表示显式无租户上下文）
+/// - 初始化 `TASK_TENANT_FILTER_DISABLED_DEPTH` 为 0
+///
+/// 供 `TenantLayer` 中间件使用。作用域内的租户上下文与过滤开关均存储于
+/// tokio task-local，跨线程调度时跟随请求任务，请求结束自动失效；
+/// 作用域外读取不会拿到其他请求遗留的 thread-local 值（返回显式 `None`）。
+#[cfg(feature = "runtime-tokio")]
+pub async fn tenant_request_scope<F, T>(ctx: Option<TenantContext>, f: F) -> T
+where
+    F: Future<Output = T>,
+{
+    TASK_TENANT_FILTER_DISABLED_DEPTH
+        .scope(Cell::new(0), TASK_TENANT_CONTEXT.scope(RefCell::new(ctx), f))
         .await
 }
 
@@ -394,11 +408,50 @@ pub fn get_effective_tenant_mode() -> Option<TenantMode> {
     get_tenant_mode()
 }
 
+// 租户过滤禁用深度：位于 task-local scope 内时存于 task-local
+// （跨线程跟随请求任务）；否则回退 thread-local（同步/测试场景）。
+#[cfg(feature = "runtime-tokio")]
+tokio::task_local! {
+    static TASK_TENANT_FILTER_DISABLED_DEPTH: Cell<u32>;
+}
+
 thread_local! {
     static TENANT_FILTER_DISABLED_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
+fn tenant_filter_depth_increment() {
+    #[cfg(feature = "runtime-tokio")]
+    {
+        if TASK_TENANT_FILTER_DISABLED_DEPTH
+            .try_with(|c| c.set(c.get().saturating_add(1)))
+            .is_ok()
+        {
+            return;
+        }
+    }
+    TENANT_FILTER_DISABLED_DEPTH.with(|c| c.set(c.get().saturating_add(1)));
+}
+
+fn tenant_filter_depth_decrement() {
+    #[cfg(feature = "runtime-tokio")]
+    {
+        if TASK_TENANT_FILTER_DISABLED_DEPTH
+            .try_with(|c| c.set(c.get().saturating_sub(1)))
+            .is_ok()
+        {
+            return;
+        }
+    }
+    TENANT_FILTER_DISABLED_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
+}
+
 pub(crate) fn is_tenant_filter_disabled() -> bool {
+    #[cfg(feature = "runtime-tokio")]
+    {
+        if let Ok(disabled) = TASK_TENANT_FILTER_DISABLED_DEPTH.try_with(|c| c.get() > 0) {
+            return disabled;
+        }
+    }
     TENANT_FILTER_DISABLED_DEPTH.with(|f| f.get() > 0)
 }
 
@@ -414,14 +467,14 @@ impl Default for TenantIgnoreGuard {
 
 impl TenantIgnoreGuard {
     pub fn new() -> Self {
-        TENANT_FILTER_DISABLED_DEPTH.with(|f| f.set(f.get().saturating_add(1)));
+        tenant_filter_depth_increment();
         Self { _private: () }
     }
 }
 
 impl Drop for TenantIgnoreGuard {
     fn drop(&mut self) {
-        TENANT_FILTER_DISABLED_DEPTH.with(|f| f.set(f.get().saturating_sub(1)));
+        tenant_filter_depth_decrement();
     }
 }
 
@@ -489,18 +542,28 @@ where
     }
 }
 
-pub struct TenantGuard;
+/// 租户上下文守卫：设置当前租户上下文，drop 时恢复设置前的上下文。
+///
+/// 支持嵌套：内层 guard drop 后外层 guard 的上下文仍然保留；
+/// 若设置前无任何上下文，drop 时清除上下文（与原行为一致）。
+pub struct TenantGuard {
+    previous: Option<TenantContext>,
+}
 
 impl TenantGuard {
     pub fn set(tenant_id: Value) -> Self {
+        let previous = get_tenant_context();
         set_tenant_context(TenantContext { tenant_id });
-        Self
+        Self { previous }
     }
 }
 
 impl Drop for TenantGuard {
     fn drop(&mut self) {
-        clear_tenant_context();
+        match self.previous.take() {
+            Some(ctx) => set_tenant_context(ctx),
+            None => clear_tenant_context(),
+        }
     }
 }
 
@@ -667,9 +730,15 @@ pub fn get_available_default_database_ext() -> Option<SeaOrmExtConnection> {
 /// 从 fallback 链中获取第一个可用的数据库连接（异步版本，带健康检查）。
 ///
 /// 通过 `ping()` 探活，依次尝试 fallback 链中的每个数据库，返回第一个可用的。
+/// - fallback 链为空：回退到单库模式（返回单库连接，不做探活）
+/// - fallback 链非空但全部探活失败：返回 `None`，避免把已知不可用的连接交给调用方
 #[cfg(feature = "runtime-tokio")]
 pub async fn get_available_default_database_async() -> Option<DatabaseConnection> {
     let dbs = get_default_databases_ext();
+    if dbs.is_empty() {
+        // 链为空，回退到单库模式
+        return get_default_database();
+    }
     for ext in &dbs {
         match ext.ping().await {
             Ok(()) => return Some(ext.inner().clone()),
@@ -681,8 +750,8 @@ pub async fn get_available_default_database_async() -> Option<DatabaseConnection
             }
         }
     }
-    // fallback 链全部不可用或链为空，回退到单库模式
-    get_default_database()
+    tracing::error!("DATABASE-FAILOVER: all databases in fallback chain are unavailable");
+    None
 }
 
 #[cfg(feature = "runtime-tokio")]
@@ -705,7 +774,7 @@ pub fn get_tenant_database() -> Result<Option<DatabaseConnection>, DbErr> {
         return Ok(get_available_default_database());
     }
 
-    if get_tenant_mode() != Some(TenantMode::Database) {
+    if get_effective_tenant_mode() != Some(TenantMode::Database) {
         return Ok(get_available_default_database());
     }
 
@@ -721,7 +790,7 @@ pub fn get_database_for_tenant(tenant_id: &Value) -> Result<Option<DatabaseConne
         return Ok(get_available_default_database());
     }
 
-    if get_tenant_mode() != Some(TenantMode::Database) {
+    if get_effective_tenant_mode() != Some(TenantMode::Database) {
         return Ok(get_available_default_database());
     }
 
@@ -750,7 +819,7 @@ pub fn get_database_for_tenant(tenant_id: &Value) -> Result<Option<DatabaseConne
 /// 内部使用，供自动路由调用。mode 检查由调用方（如 `get_tenant_database_for_current`）负责。
 ///
 /// 与 [`get_database_for_tenant`] 的区别：
-/// - [`get_database_for_tenant`] 会检查全局 `get_tenant_mode()`，table 模式下直接返回主库
+/// - [`get_database_for_tenant`] 会检查当前生效的租户模式（运行时 provider > 全局配置），非 database 模式下直接返回主库
 /// - 本函数不检查 mode，仅按 tenant_id 查找连接缓存
 ///
 /// 适用场景：运行时 provider 指定为 database 模式但全局配置为 table 模式时，
@@ -833,13 +902,34 @@ pub fn get_tenant_database_for_current() -> Result<Option<DatabaseConnection>, D
     get_database_for_tenant_unchecked(&tenant_id)
 }
 
+/// 当前请求是否会由自动路由切换到租户专属数据库。
+///
+/// 与 [`get_tenant_database_for_current`] 的区别：仅在确实命中租户专属连接时返回 `true`；
+/// 未命中（走 fallback 主库）或非 database 模式时返回 `false`。
+///
+/// 供流式查询等无法自动路由的场景做快速失败判断，避免静默查询主库返回错误数据。
+pub fn has_active_tenant_database_routing() -> bool {
+    if !is_tenant_enabled() || is_tenant_filter_disabled() {
+        return false;
+    }
+    if get_effective_tenant_mode() != Some(TenantMode::Database) {
+        return false;
+    }
+    let Some(tenant_id) = get_current_tenant_id() else {
+        return false;
+    };
+    get_tenant_store()
+        .map(|store| store.get(&tenant_id).is_some())
+        .unwrap_or(false)
+}
+
 #[cfg(feature = "runtime-tokio")]
 pub async fn get_database_for_tenant_async(tenant_id: &Value) -> Result<Option<DatabaseConnection>, DbErr> {
     if !is_tenant_enabled() {
         return Ok(get_available_default_database_async().await);
     }
 
-    if get_tenant_mode() != Some(TenantMode::Database) {
+    if get_effective_tenant_mode() != Some(TenantMode::Database) {
         return Ok(get_available_default_database_async().await);
     }
 
@@ -894,7 +984,7 @@ pub async fn get_tenant_database_async() -> Result<Option<DatabaseConnection>, D
         return Ok(get_default_database());
     }
 
-    if get_tenant_mode() != Some(TenantMode::Database) {
+    if get_effective_tenant_mode() != Some(TenantMode::Database) {
         return Ok(get_default_database());
     }
 
@@ -910,7 +1000,7 @@ pub fn tenant_db(default_db: &DatabaseConnection) -> Result<DatabaseConnection, 
         return Ok(default_db.clone());
     }
 
-    match get_tenant_mode() {
+    match get_effective_tenant_mode() {
         Some(TenantMode::Database) => {
             let tenant_id = get_current_tenant_id().ok_or_else(|| {
                 DbErr::Custom(
@@ -946,7 +1036,7 @@ pub fn tenant_db_for(default_db: &DatabaseConnection, tenant_id: &Value) -> Resu
         return Ok(default_db.clone());
     }
 
-    match get_tenant_mode() {
+    match get_effective_tenant_mode() {
         Some(TenantMode::Database) => {
             let store = get_tenant_store().ok_or_else(|| {
                 DbErr::Custom(
@@ -975,7 +1065,7 @@ pub async fn tenant_db_async(default_db: &DatabaseConnection) -> Result<Database
         return Ok(default_db.clone());
     }
 
-    match get_tenant_mode() {
+    match get_effective_tenant_mode() {
         Some(TenantMode::Database) => {
             let tenant_id = get_current_tenant_id().ok_or_else(|| {
                 DbErr::Custom(
@@ -1020,7 +1110,7 @@ pub async fn tenant_db_for_async(default_db: &DatabaseConnection, tenant_id: &Va
         return Ok(default_db.clone());
     }
 
-    match get_tenant_mode() {
+    match get_effective_tenant_mode() {
         Some(TenantMode::Database) => {
             let store = get_tenant_store().ok_or_else(|| {
                 DbErr::Custom(

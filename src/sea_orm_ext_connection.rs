@@ -1,4 +1,5 @@
 
+use crate::circuit_breaker::CircuitBreaker;
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DbBackend, DbErr, ExecResult, QueryResult, Statement,
     StreamTrait, TransactionError, TransactionTrait,
@@ -6,12 +7,15 @@ use sea_orm::{
 use sea_query::{inject_parameters, MysqlQueryBuilder, PostgresQueryBuilder, SqliteQueryBuilder};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SeaOrmExtConnection {
     inner: DatabaseConnection,
     /// 重试配置：失败时的最大重试次数（0 = 不重试）
     max_retries: std::sync::Arc<AtomicU32>,
+    /// 可选的熔断器：连接类失败达到阈值后快速失败（None = 关闭）
+    breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl SeaOrmExtConnection {
@@ -19,6 +23,7 @@ impl SeaOrmExtConnection {
         Self {
             inner: conn,
             max_retries: std::sync::Arc::new(AtomicU32::new(0)),
+            breaker: None,
         }
     }
 
@@ -38,6 +43,10 @@ impl SeaOrmExtConnection {
     ///
     /// 重试仅对 `execute_raw` / `query_one_raw` / `query_all_raw` 生效，
     /// 事务操作不重试（事务失败需要业务侧自行处理）。
+    ///
+    /// ⚠️ **注意**：重试对写操作（INSERT/UPDATE/DELETE）同样生效。
+    /// 若连接错误发生在服务端已执行、响应未返回的时刻，重试可能造成重复写入；
+    /// 开启前请确保业务具备幂等性（唯一键约束、幂等令牌等）。
     pub fn set_max_retries(&self, max: u32) {
         self.max_retries.store(max, Ordering::Relaxed);
     }
@@ -45,6 +54,19 @@ impl SeaOrmExtConnection {
     /// 获取当前重试次数配置
     pub fn get_max_retries(&self) -> u32 {
         self.max_retries.load(Ordering::Relaxed)
+    }
+
+    /// 设置/替换熔断器（传入 `None` 关闭，默认关闭）。
+    ///
+    /// 熔断仅统计连接类错误（与重试判定一致）：连续失败达到阈值后进入 Open，
+    /// 期间所有 SQL 快速失败；`reset_timeout` 后进入 HalfOpen 放行探针请求。
+    pub fn set_circuit_breaker(&mut self, breaker: Option<Arc<CircuitBreaker>>) {
+        self.breaker = breaker;
+    }
+
+    /// 获取当前熔断器。
+    pub fn circuit_breaker(&self) -> Option<&Arc<CircuitBreaker>> {
+        self.breaker.as_ref()
     }
 
     /// 判断错误是否为可重试的连接类错误
@@ -62,24 +84,45 @@ impl SeaOrmExtConnection {
             || msg.contains(" eof ")
     }
 
-    /// 带重试的执行包装
+    /// 带重试与熔断的执行包装
     async fn with_retry<F, Fut, T>(&self, op: F) -> Result<T, DbErr>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, DbErr>>,
     {
+        // 熔断快速失败：Open 状态直接拒绝，不占用连接池
+        if let Some(breaker) = &self.breaker {
+            if !breaker.allow() {
+                return Err(DbErr::Custom(
+                    "CIRCUIT-BREAKER: open, request rejected fast".to_owned(),
+                ));
+            }
+        }
+
         let max = self.get_max_retries();
         let mut attempt = 0u32;
         loop {
             match op().await {
-                Ok(v) => return Ok(v),
+                Ok(v) => {
+                    if let Some(breaker) = &self.breaker {
+                        breaker.record_success();
+                    }
+                    return Ok(v);
+                }
                 Err(e) => {
-                    if attempt >= max || !Self::is_retryable_error(&e) {
+                    // 仅连接类错误计入熔断，避免业务错误（如约束冲突）误触发
+                    let retryable = Self::is_retryable_error(&e);
+                    if let Some(breaker) = &self.breaker {
+                        if retryable {
+                            breaker.record_failure();
+                        }
+                    }
+                    if attempt >= max || !retryable {
                         return Err(e);
                     }
                     attempt += 1;
                     // 指数退避：100ms, 200ms, 400ms, ...
-                    let backoff_ms = 100u64 * (1 << attempt.min(6));
+                    let backoff_ms = 100u64 * (1 << (attempt - 1).min(6));
                     tracing::warn!(
                         "DB operation failed (attempt {}/{}), retrying in {}ms: {}",
                         attempt, max, backoff_ms, e
@@ -168,47 +211,63 @@ impl ConnectionTrait for SeaOrmExtConnection {
 
     async fn execute_raw(&self, stmt: Statement) -> Result<ExecResult, DbErr> {
         log_statement(&stmt);
+        let start = std::time::Instant::now();
         let stmt_clone = stmt.clone();
         let db = self.effective_connection();
-        self.with_retry(|| {
-            let stmt = stmt_clone.clone();
-            db.execute_raw(stmt)
-        })
-        .await
+        let result = self
+            .with_retry(|| {
+                let stmt = stmt_clone.clone();
+                db.execute_raw(stmt)
+            })
+            .await;
+        crate::log_slow_sql(&stmt.sql, start.elapsed());
+        result
     }
 
     async fn execute_unprepared(&self, sql: &str) -> Result<ExecResult, DbErr> {
         if crate::log::is_sql_log_enabled() {
             tracing::info!("[sea-orm-ext SQL] {}", sql);
         }
+        let start = std::time::Instant::now();
         let sql_owned = sql.to_string();
         let db = self.effective_connection();
-        self.with_retry(|| {
-            db.execute_unprepared(&sql_owned)
-        })
-        .await
+        let result = self
+            .with_retry(|| {
+                db.execute_unprepared(&sql_owned)
+            })
+            .await;
+        crate::log_slow_sql(sql, start.elapsed());
+        result
     }
 
     async fn query_one_raw(&self, stmt: Statement) -> Result<Option<QueryResult>, DbErr> {
         log_statement(&stmt);
+        let start = std::time::Instant::now();
         let stmt_clone = stmt.clone();
         let db = self.effective_connection();
-        self.with_retry(|| {
-            let stmt = stmt_clone.clone();
-            db.query_one_raw(stmt)
-        })
-        .await
+        let result = self
+            .with_retry(|| {
+                let stmt = stmt_clone.clone();
+                db.query_one_raw(stmt)
+            })
+            .await;
+        crate::log_slow_sql(&stmt.sql, start.elapsed());
+        result
     }
 
     async fn query_all_raw(&self, stmt: Statement) -> Result<Vec<QueryResult>, DbErr> {
         log_statement(&stmt);
+        let start = std::time::Instant::now();
         let stmt_clone = stmt.clone();
         let db = self.effective_connection();
-        self.with_retry(|| {
-            let stmt = stmt_clone.clone();
-            db.query_all_raw(stmt)
-        })
-        .await
+        let result = self
+            .with_retry(|| {
+                let stmt = stmt_clone.clone();
+                db.query_all_raw(stmt)
+            })
+            .await;
+        crate::log_slow_sql(&stmt.sql, start.elapsed());
+        result
     }
 }
 
@@ -228,11 +287,21 @@ impl StreamTrait for SeaOrmExtConnection {
     > {
         log_statement(&stmt);
         // 注意：StreamTrait 要求 Stream<'a> 借用 self，而 effective_connection() 返回 owned
-        // 的 DatabaseConnection，无法满足生命周期约束。
-        // 因此流式查询不自动路由到租户库，统一走主库（self.inner）。
-        // 业务层如需在租户库上执行流式查询，请手动用 tenant_db() 获取连接：
+        // 的 DatabaseConnection，无法满足生命周期约束，因此流式查询无法自动路由。
+        // 若当前请求确实需要路由到租户库（database 模式 + 命中租户连接），
+        // 则快速失败，避免静默查询主库返回错误数据。
+        // 业务层如需在租户库上执行流式查询，请显式获取连接：
         //   let tenant_db = tenant_db(&self.db)?;
         //   let stream = Entity::find().stream(&tenant_db).await?;
+        if crate::has_active_tenant_database_routing() {
+            return Box::pin(async {
+                Err(DbErr::Custom(
+                    "STREAM-ROUTING: streaming queries cannot auto-route to the tenant database; \
+                     use tenant_db() / tenant_db_async() to get the tenant connection explicitly"
+                        .to_owned(),
+                ))
+            });
+        }
         self.inner.stream_raw(stmt)
     }
 }

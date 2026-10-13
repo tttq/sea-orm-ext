@@ -31,6 +31,15 @@ pub struct SeaOrmConfig {
     pub default_user: String,
     #[serde(default)]
     pub fill_rules: Vec<FillRule>,
+    /// 慢 SQL 日志阈值（毫秒，不设置或 0 = 关闭）
+    #[serde(default)]
+    pub slow_sql_threshold_ms: Option<u64>,
+    /// 主库熔断器：连续连接类失败阈值（不设置或 0 = 关闭）
+    #[serde(default)]
+    pub circuit_breaker_failure_threshold: Option<u64>,
+    /// 主库熔断持续时间（秒，默认 30）
+    #[serde(default)]
+    pub circuit_breaker_reset_secs: Option<u64>,
 }
 
 fn default_min_connections() -> u32 {
@@ -57,6 +66,9 @@ impl Default for SeaOrmConfig {
             acquire_timeout: None,
             default_user: default_default_user(),
             fill_rules: Vec::new(),
+            slow_sql_threshold_ms: None,
+            circuit_breaker_failure_threshold: None,
+            circuit_breaker_reset_secs: None,
         }
     }
 }
@@ -140,10 +152,29 @@ impl Plugin for SeaOrmPlugin {
 
         app.add_component(conn.clone());
 
-        let ext_conn = SeaOrmExtConnection::new(conn);
+        let mut ext_conn = SeaOrmExtConnection::new(conn);
+        if let Some(threshold) = config.circuit_breaker_failure_threshold {
+            if threshold > 0 {
+                let reset_secs = config.circuit_breaker_reset_secs.unwrap_or(30).max(1);
+                ext_conn.set_circuit_breaker(Some(Arc::new(crate::CircuitBreaker::new(
+                    threshold,
+                    Duration::from_secs(reset_secs),
+                ))));
+                tracing::info!(
+                    "[sea-orm-ext] circuit breaker enabled for main connection (threshold={}, reset={}s)",
+                    threshold,
+                    reset_secs
+                );
+            }
+        }
         app.add_component(ext_conn);
 
         set_sql_log_enabled(config.enable_sql_log);
+
+        if let Some(ms) = config.slow_sql_threshold_ms {
+            crate::set_slow_sql_threshold_ms(ms);
+            tracing::info!("[sea-orm-ext] slow SQL threshold set to {}ms", ms);
+        }
 
         if config.enable_sql_log {
             tracing::info!("[sea-orm-ext] SQL log enabled, complete SQL with parameters will be printed");

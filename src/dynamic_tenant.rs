@@ -74,6 +74,10 @@ pub struct TenantConnectionConfig {
     pub idle_timeout_secs: Option<u64>,
     /// 是否开启 sqlx 原生日志
     pub enable_logging: Option<bool>,
+    /// 熔断器：连续连接类失败阈值（None 或 0 = 关闭）
+    pub circuit_breaker_failure_threshold: Option<u64>,
+    /// 熔断持续时间（秒，默认 30）
+    pub circuit_breaker_reset_secs: Option<u64>,
 }
 
 impl Default for TenantConnectionConfig {
@@ -88,6 +92,8 @@ impl Default for TenantConnectionConfig {
             acquire_timeout_secs: Some(30),
             idle_timeout_secs: Some(600),
             enable_logging: Some(false),
+            circuit_breaker_failure_threshold: None,
+            circuit_breaker_reset_secs: None,
         }
     }
 }
@@ -97,7 +103,7 @@ impl Default for TenantConnectionConfig {
 /// 由用户实现，从主库租户表查询并返回所需的连接参数。
 /// 框架不关心租户表的结构和 Entity 定义，只通过此 trait 获取连接信息。
 ///
-/// `main_db` 由框架自动传入（从 `SeaOrmExtPlugin` 注册的主库连接），
+/// `main_db` 由框架自动传入（从 `SeaOrmPlugin` 注册的主库连接），
 /// 用户实现时无需自己持有主库连接。
 #[async_trait]
 pub trait DynamicTenantConfigProvider: Send + Sync + 'static {
@@ -223,8 +229,16 @@ impl TenantManager {
     pub async fn add_tenant(&self, tenant_id: &str) -> Result<(), DbErr> {
         tracing::info!("DYNAMIC-TENANT: adding tenant {}", tenant_id);
 
-        let cfg = self
-            .inner
+        let cfg = self.load_config(tenant_id).await?;
+        self.connect_and_cache(&cfg).await?;
+
+        tracing::info!("DYNAMIC-TENANT: tenant {} added to cache", tenant_id);
+        Ok(())
+    }
+
+    /// 从主库查询单个租户的连接配置，不存在（或未启用）时返回错误。
+    async fn load_config(&self, tenant_id: &str) -> Result<TenantConnectionConfig, DbErr> {
+        self.inner
             .provider
             .load_one(&self.inner.main_db, tenant_id)
             .await?
@@ -233,26 +247,23 @@ impl TenantManager {
                     "DYNAMIC-TENANT: tenant {} not found in main database or not enabled",
                     tenant_id
                 ))
-            })?;
-
-        self.connect_and_cache(&cfg).await?;
-
-        tracing::info!("DYNAMIC-TENANT: tenant {} added to cache", tenant_id);
-        Ok(())
+            })
     }
 
-    /// 动态更新租户：关闭旧连接 → 查询新配置 → 建立新连接 → 替换缓存
+    /// 动态更新租户：查询新配置 → 关闭旧连接 → 建立新连接 → 替换缓存
     ///
     /// **注意**：此方法只同步缓存，不写主库。
+    /// 先查询新配置，查询失败或租户不存在时保留旧连接不变（避免缓存被半程清空）。
     pub async fn update_tenant(&self, tenant_id: &str) -> Result<(), DbErr> {
         tracing::info!("DYNAMIC-TENANT: updating tenant {}", tenant_id);
 
-        // 先移除旧连接
+        // 1. 先查询新配置：失败则不触碰旧连接
+        let cfg = self.load_config(tenant_id).await?;
+
+        // 2. 移除旧连接并建立新连接
         let tenant_value = Value::String(Some(tenant_id.to_string()));
         self.inner.store.remove(&tenant_value)?;
-
-        // 重新查询并建立连接
-        self.add_tenant(tenant_id).await?;
+        self.connect_and_cache(&cfg).await?;
 
         tracing::info!("DYNAMIC-TENANT: tenant {} updated in cache", tenant_id);
         Ok(())
@@ -275,13 +286,20 @@ impl TenantManager {
     }
 
     /// 全量重载：清空缓存 → 重新从主库加载所有租户
+    ///
+    /// 会先移除缓存中所有现有连接，确保主库中已删除/禁用的租户不会继续残留在缓存里。
     pub async fn refresh_cache(&self) -> Result<(), DbErr> {
         tracing::info!("DYNAMIC-TENANT: refreshing cache (full reload)");
 
-        // 清理失败计数
+        // 1. 清空现有连接缓存（主库已移除的租户不应继续可路由）
+        for tenant_id in self.inner.store.get_all_tenants() {
+            let _ = self.inner.store.remove(&tenant_id);
+        }
+
+        // 2. 清理失败计数
         self.inner.failure_counts.lock().unwrap().clear();
 
-        // 重新初始化
+        // 3. 重新初始化
         self.initialize().await
     }
 
@@ -376,7 +394,15 @@ impl TenantManager {
             .sqlx_logging(cfg.enable_logging.unwrap_or(false));
 
         let conn = sea_orm::Database::connect(opt).await?;
-        let ext_conn = SeaOrmExtConnection::new(conn);
+        let mut ext_conn = SeaOrmExtConnection::new(conn);
+        if let Some(threshold) = cfg.circuit_breaker_failure_threshold {
+            if threshold > 0 {
+                ext_conn.set_circuit_breaker(Some(Arc::new(crate::CircuitBreaker::new(
+                    threshold,
+                    Duration::from_secs(cfg.circuit_breaker_reset_secs.unwrap_or(30).max(1)),
+                ))));
+            }
+        }
 
         self.inner.store.insert_ext(
             Value::String(Some(cfg.tenant_id.clone())),
@@ -384,6 +410,44 @@ impl TenantManager {
         )?;
 
         Ok(())
+    }
+
+    /// 缓存的租户 ID 列表（字符串形式，与 `ConnectionStore` 的 key 一致）。
+    pub fn list_tenants(&self) -> Vec<String> {
+        self.inner
+            .store
+            .get_all_tenants()
+            .into_iter()
+            .filter_map(|v| match v {
+                Value::String(Some(s)) => Some(s),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 缓存中的租户连接数量。
+    pub fn tenant_count(&self) -> usize {
+        self.inner.store.len()
+    }
+
+    /// 对单个租户连接执行健康检查（ping）。
+    ///
+    /// 租户不在缓存中时返回 `None`；否则返回检查结果（含耗时与错误信息）。
+    pub async fn health_check_tenant(&self, tenant_id: &str) -> Option<crate::HealthEntry> {
+        let key = Value::String(Some(tenant_id.to_string()));
+        let conn = self.inner.store.get(&key)?;
+        Some(crate::check_database(format!("tenant:{}", tenant_id), &conn).await)
+    }
+
+    /// 对缓存中的所有租户连接执行健康检查，返回完整报告。
+    pub async fn health_check_all(&self) -> crate::HealthReport {
+        let mut entries = Vec::new();
+        for tenant_id in self.list_tenants() {
+            if let Some(entry) = self.health_check_tenant(&tenant_id).await {
+                entries.push(entry);
+            }
+        }
+        crate::HealthReport { entries }
     }
 }
 

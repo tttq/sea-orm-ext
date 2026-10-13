@@ -4,10 +4,7 @@ use crate::{
 };
 use std::collections::HashSet;
 #[cfg(feature = "summer-web")]
-use crate::{
-    clear_tenant_context, get_tenant_database, get_tenant_mode,
-    is_tenant_enabled, set_tenant_context,
-};
+use crate::{get_effective_tenant_mode, get_tenant_database, is_tenant_enabled};
 use sea_orm::DatabaseConnection;
 use sea_query::Value;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -233,6 +230,14 @@ pub struct TenantPluginConfig {
     /// ```
     #[serde(default)]
     pub max_retries: Option<u32>,
+    /// 租户连接熔断器：连续连接类失败阈值（不设置或 0 = 关闭）。
+    ///
+    /// 每个租户连接拥有独立熔断器（互不影响），触发后该连接快速失败。
+    #[serde(default)]
+    pub circuit_breaker_failure_threshold: Option<u64>,
+    /// 租户连接熔断持续时间（秒，默认 30）
+    #[serde(default)]
+    pub circuit_breaker_reset_secs: Option<u64>,
     /// 是否开启 SQL 日志（完整 SQL + 参数值注入）。
     ///
     /// 设置为 `true` 后，所有通过 `SeaOrmExtConnection` 执行的 SQL 语句都会被
@@ -279,6 +284,8 @@ impl std::fmt::Debug for TenantPluginConfig {
             .field("default_databases", &self.default_databases)
             .field("ignored_tables", &self.ignored_tables)
             .field("max_retries", &self.max_retries)
+            .field("circuit_breaker_failure_threshold", &self.circuit_breaker_failure_threshold)
+            .field("circuit_breaker_reset_secs", &self.circuit_breaker_reset_secs)
             .field("enable_sql_log", &self.enable_sql_log)
             .field("tenant_id_header", &self.tenant_id_header)
             .field("tenant_id_provider", &self.tenant_id_provider.as_ref().map(|_| "..."))
@@ -298,6 +305,8 @@ impl Default for TenantPluginConfig {
             default_databases: None,
             ignored_tables: None,
             max_retries: None,
+            circuit_breaker_failure_threshold: None,
+            circuit_breaker_reset_secs: None,
             enable_sql_log: false,
             tenant_id_header: None,
             tenant_id_provider: None,
@@ -358,11 +367,22 @@ async fn connect_from_options(tenant_id: &Value, opt: &sea_orm::ConnectOptions) 
     conn
 }
 
-/// 创建带重试配置的 `SeaOrmExtConnection`
-fn build_ext_conn(conn: DatabaseConnection, max_retries: u32) -> SeaOrmExtConnection {
-    let ext = SeaOrmExtConnection::new(conn);
+/// 创建带重试与熔断配置的 `SeaOrmExtConnection`
+fn build_ext_conn(
+    conn: DatabaseConnection,
+    max_retries: u32,
+    cb_threshold: u64,
+    cb_reset_secs: u64,
+) -> SeaOrmExtConnection {
+    let mut ext = SeaOrmExtConnection::new(conn);
     if max_retries > 0 {
         ext.set_max_retries(max_retries);
+    }
+    if cb_threshold > 0 {
+        ext.set_circuit_breaker(Some(Arc::new(crate::CircuitBreaker::new(
+            cb_threshold,
+            std::time::Duration::from_secs(cb_reset_secs),
+        ))));
     }
     ext
 }
@@ -427,6 +447,17 @@ impl Plugin for TenantPlugin {
             );
         }
 
+        // 熔断配置：每个租户连接使用独立熔断器（互不影响），默认关闭
+        let cb_threshold = config.circuit_breaker_failure_threshold.unwrap_or(0);
+        let cb_reset_secs = config.circuit_breaker_reset_secs.unwrap_or(30).max(1);
+        if cb_threshold > 0 {
+            tracing::info!(
+                "Tenant connection circuit breaker enabled (threshold={}, reset={}s)",
+                cb_threshold,
+                cb_reset_secs
+            );
+        }
+
         // SQL 日志开关：与 [sea-orm-ext] enable_sql_log 等效，控制同一个全局开关
         if config.enable_sql_log {
             crate::set_sql_log_enabled(true);
@@ -451,7 +482,7 @@ impl Plugin for TenantPlugin {
                             "Connected to default database (fallback chain): {}",
                             entry.url
                         );
-                        ext_connections.push(build_ext_conn(conn, max_retries));
+                        ext_connections.push(build_ext_conn(conn, max_retries, cb_threshold, cb_reset_secs));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -505,7 +536,7 @@ impl Plugin for TenantPlugin {
                                     );
                                     let _ = store.insert_ext(
                                         Value::String(Some(tenant_id.clone())),
-                                        build_ext_conn(conn, max_retries),
+                                        build_ext_conn(conn, max_retries, cb_threshold, cb_reset_secs),
                                     );
                                 }
                                 Err(e) => {
@@ -540,7 +571,7 @@ impl Plugin for TenantPlugin {
                                 Ok(conn) => {
                                     let _ = store.insert_ext(
                                         tenant_id.clone(),
-                                        build_ext_conn(conn, max_retries),
+                                        build_ext_conn(conn, max_retries, cb_threshold, cb_reset_secs),
                                     );
                                     connected += 1;
                                 }
@@ -577,7 +608,7 @@ impl Plugin for TenantPlugin {
                                 Ok(conn) => {
                                     let _ = store.insert_ext(
                                         Value::String(Some(tenant_id.clone())),
-                                        build_ext_conn(conn, max_retries),
+                                        build_ext_conn(conn, max_retries, cb_threshold, cb_reset_secs),
                                     );
                                 }
                                 Err(e) => {
@@ -688,6 +719,11 @@ pub mod tenant_layer {
         }
 
         fn call(&mut self, mut req: Request<B>) -> Self::Future {
+            // 解析当前请求的租户上下文，但暂不写入全局状态：
+            // 由 tenant_request_scope 在请求 future 内以 task-local 方式暴露，
+            // 避免在连接任务线程上读写 thread-local 造成跨请求污染。
+            let mut request_ctx: Option<TenantContext> = None;
+
             if is_tenant_enabled() {
                 // 1. 优先从 HTTP Header 提取（若配置了 tenant_id_header）
                 let header_tenant_id = extract_tenant_id_from_header(&req);
@@ -701,7 +737,7 @@ pub mod tenant_layer {
                         crate::get_tenant_config().and_then(|c| c.default_tenant_id.clone())
                     });
 
-                // 3. 若拿到 tenant_id，进行解密（若注册了 codec），然后设置上下文
+                // 3. 若拿到 tenant_id，进行解密（若注册了 codec），然后记录上下文
                 if let Some(tenant_id) = raw_tenant_id {
                     let resolved: Option<Value> = match &tenant_id {
                         Value::String(Some(s)) => {
@@ -726,13 +762,15 @@ pub mod tenant_layer {
                     };
 
                     if let Some(final_id) = resolved {
-                        set_tenant_context(TenantContext { tenant_id: final_id });
-
-                        if get_tenant_mode() == Some(TenantMode::Database) {
-                            if let Ok(Some(db)) = get_tenant_database() {
+                        // database 模式：提前把租户库连接放进 request extensions，
+                        // 供 TenantDb extractor 直接命中（此处用显式 tenant_id 查询，
+                        // 因为上下文尚未写入 task-local）。
+                        if get_effective_tenant_mode() == Some(TenantMode::Database) {
+                            if let Ok(Some(db)) = crate::get_database_for_tenant(&final_id) {
                                 req.extensions_mut().insert::<DatabaseConnection>(db);
                             }
                         }
+                        request_ctx = Some(TenantContext { tenant_id: final_id });
                     }
                 }
             }
@@ -741,9 +779,21 @@ pub mod tenant_layer {
             let mut inner = std::mem::replace(&mut self.inner, inner);
 
             Box::pin(async move {
-                let response = inner.call(req).await;
-                clear_tenant_context();
-                response
+                #[cfg(feature = "runtime-tokio")]
+                {
+                    // task-local scope：上下文与过滤开关跨线程跟随请求任务，请求结束自动失效
+                    crate::tenant_request_scope(request_ctx, inner.call(req)).await
+                }
+                #[cfg(not(feature = "runtime-tokio"))]
+                {
+                    use crate::{clear_tenant_context, set_tenant_context};
+                    if let Some(ctx) = request_ctx {
+                        set_tenant_context(ctx);
+                    }
+                    let response = inner.call(req).await;
+                    clear_tenant_context();
+                    response
+                }
             })
         }
     }
@@ -799,7 +849,7 @@ pub mod tenant_layer {
             parts: &mut axum::http::request::Parts,
             _state: &B,
         ) -> Result<Self, Self::Rejection> {
-            if get_tenant_mode() == Some(TenantMode::Database) {
+            if get_effective_tenant_mode() == Some(TenantMode::Database) {
                 if let Some(db) = parts.extensions.get::<DatabaseConnection>() {
                     return Ok(TenantDb(SeaOrmExtConnection::new(db.clone())));
                 }

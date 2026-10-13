@@ -99,6 +99,33 @@ mod product_entity {
 
 pub use product_entity::{Entity as Product, Model as ProductModel, ActiveModel as ProductActiveModel, Column as ProductColumn};
 
+mod lock_record_entity {
+    use sea_orm::entity::prelude::*;
+    use sea_orm_ext::DeriveAutoFillSoftDelete;
+
+    /// 乐观锁测试实体：version 标注为 VERSION（非填充字段）
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDelete)]
+    #[sea_orm(table_name = "lock_records")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_generate)]
+        pub id: i64,
+        pub name: String,
+        #[sea_orm_ext(insert)]
+        pub created_by: Option<String>,
+        #[sea_orm_ext(update)]
+        pub updated_by: Option<String>,
+        #[sea_orm_ext(VERSION)]
+        pub version: i32,
+        #[soft_delete(default = 0, del = 1)]
+        pub is_deleted: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+}
+
+pub use lock_record_entity::{Entity as LockRecord, Model as LockRecordModel, ActiveModel as LockRecordActiveModel, Column as LockRecordColumn};
+
 mod config_entity {
     use sea_orm::entity::prelude::*;
     use sea_orm_ext::DeriveAutoFillSoftDelete;
@@ -314,6 +341,26 @@ pub async fn setup_product_table(db: &impl sea_orm::ConnectionTrait) {
             tenant_id   TEXT
         )
     "#).await.unwrap();
+}
+
+pub async fn setup_lock_record_table(db: &impl sea_orm::ConnectionTrait) {
+    db.execute_unprepared(r#"
+        CREATE TABLE IF NOT EXISTS lock_records (
+            id          INTEGER PRIMARY KEY,
+            name        TEXT    NOT NULL,
+            created_by  TEXT,
+            updated_by  TEXT,
+            version     INTEGER NOT NULL DEFAULT 0,
+            is_deleted  INTEGER NOT NULL DEFAULT 0
+        )
+    "#).await.unwrap();
+}
+
+pub fn new_lock_record(name: &str) -> LockRecordActiveModel {
+    LockRecordActiveModel {
+        name: sea_orm::Set(name.to_string()),
+        ..Default::default()
+    }
 }
 
 pub async fn setup_sys_config_table(db: &impl sea_orm::ConnectionTrait) {

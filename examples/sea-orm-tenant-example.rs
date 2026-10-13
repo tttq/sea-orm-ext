@@ -1,4 +1,4 @@
-use sea_orm_ext::plugin::sea_orm_ext::{FieldFillHandlerComponent, SeaOrmExtPlugin, SnowflakeIdGenerator};
+use sea_orm_ext::plugin::sea_orm_ext::{FieldFillHandlerComponent, SeaOrmPlugin, SnowflakeIdGenerator};
 use sea_orm_ext::plugin::tenant::{TenantDatabaseProviderComponent, TenantIdProviderComponent, TenantPlugin};
 use sea_orm_ext::{FieldFillHandler, FieldFillOperation, TenantDatabaseProvider, TenantIdProvider};
 use sea_orm_ext::set_id_generator;
@@ -49,7 +49,7 @@ impl FieldFillHandler for MyFieldFillHandler {
 fn build_app() -> summer::app::AppBuilder {
     let mut app = App::new();
     app.add_plugin(TenantPlugin::new())
-        .add_plugin(SeaOrmExtPlugin::new())
+        .add_plugin(SeaOrmPlugin::new())
         .add_component(TenantIdProviderComponent::new(Arc::new(MyTenantIdProvider)))
         .add_component(TenantDatabaseProviderComponent::new(Arc::new(MyTenantDatabaseProvider)))
         .add_component(FieldFillHandlerComponent::new(Arc::new(MyFieldFillHandler)));

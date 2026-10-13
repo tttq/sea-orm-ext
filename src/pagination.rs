@@ -35,6 +35,19 @@ impl Pagination {
             self.page
         }
     }
+
+    /// 返回 `page` 已收敛到合法范围的副本。
+    ///
+    /// sea-orm 分页内部使用 `offset = size * page`，超大 page 会导致 u64 乘法溢出
+    /// （debug 下 panic / release 下回绕），此处在进入分页器前限制 page 上限。
+    fn clamped(&self) -> Pagination {
+        let max_page = u64::MAX.checked_div(self.size).unwrap_or(0);
+        Pagination {
+            page: self.page.min(max_page),
+            size: self.size,
+            one_indexed: self.one_indexed,
+        }
+    }
 }
 
 #[cfg(feature = "summer-web")]
@@ -273,10 +286,11 @@ where
     M: FromQueryResult + Sized + Send + Sync + 'db,
 {
     async fn page(self, db: &'db C, pagination: &Pagination) -> PageResult<M> {
+        let pagination = pagination.clamped();
         let paginator = self.paginate(db, pagination.size);
         let total = paginator.num_items().await?;
         let content = paginator.fetch_page(pagination.page).await?;
-        Ok(Page::new(content, pagination, total))
+        Ok(Page::new(content, &pagination, total))
     }
 }
 
@@ -287,10 +301,11 @@ where
     S: SelectorTrait + Send + Sync + 'db,
 {
     async fn page(self, db: &'db C, pagination: &Pagination) -> PageResult<S::Item> {
+        let pagination = pagination.clamped();
         let paginator = self.paginate(db, pagination.size);
         let total = paginator.num_items().await?;
         let content = paginator.fetch_page(pagination.page).await?;
-        Ok(Page::new(content, pagination, total))
+        Ok(Page::new(content, &pagination, total))
     }
 }
 

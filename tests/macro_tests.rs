@@ -656,3 +656,224 @@ async fn test_ignore_tenant_with_db_operation() {
 async fn count_all_products_ignoring_tenant(db: &sea_orm::DatabaseConnection) -> usize {
     Product::find().all(db).await.unwrap().len()
 }
+
+// ===========================================================================
+// 软删除恢复（restore）测试
+// ===========================================================================
+
+/// 批量恢复：restore_many 单条 SQL 撤销软删除，未删除的行不受影响
+#[tokio::test]
+#[serial]
+async fn test_restore_many() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("restore")));
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    let m1 = new_product("R1", None).insert(&db).await.unwrap();
+    let m2 = new_product("R2", None).insert(&db).await.unwrap();
+    let m3 = new_product("R3", None).insert(&db).await.unwrap();
+
+    // 软删除 m1、m2
+    Product::delete_many_soft(vec![m1.clone().into(), m2.clone().into()], &db)
+        .await
+        .unwrap();
+    assert_eq!(find_active_products(&db).await.len(), 1);
+
+    // 批量恢复 m1、m2
+    let result = Product::restore_many(vec![m1.into(), m2.into()], &db).await.unwrap();
+    assert_eq!(result.rows_affected, 2);
+    assert_eq!(find_active_products(&db).await.len(), 3);
+
+    // 未删除的记录不参与恢复（状态守卫）
+    let result = Product::restore_many(vec![m3.into()], &db).await.unwrap();
+    assert_eq!(result.rows_affected, 0, "non-deleted rows should not be affected");
+}
+
+/// 按 ID 恢复：仅恢复已软删除的行，重复调用幂等
+#[tokio::test]
+#[serial]
+async fn test_restore_by_ids_state_guard() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("restore_ids")));
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    let m1 = new_product("RI1", None).insert(&db).await.unwrap();
+    let m2 = new_product("RI2", None).insert(&db).await.unwrap();
+
+    Product::delete_many_soft(vec![m1.clone().into()], &db).await.unwrap();
+
+    // 同时传入已删除与未删除的 ID → 仅恢复已删除的 1 条
+    let result = Product::restore_by_ids(vec![m1.id, m2.id], &db).await.unwrap();
+    assert_eq!(result.rows_affected, 1, "only soft-deleted rows should be restored");
+
+    // 重复恢复 → 0（幂等）
+    let result = Product::restore_by_ids(vec![m1.id], &db).await.unwrap();
+    assert_eq!(result.rows_affected, 0);
+
+    // 空列表 → 0
+    let result = Product::restore_by_ids(Vec::<i64>::new(), &db).await.unwrap();
+    assert_eq!(result.rows_affected, 0);
+
+    assert_eq!(find_active_products(&db).await.len(), 2);
+}
+
+/// 恢复的租户隔离：租户 2 无法恢复租户 1 的已删除记录
+#[tokio::test]
+#[serial]
+async fn test_restore_respects_tenant_isolation() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("restore_t")));
+
+    // Table 模式多租户
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+
+    let db = create_sqlite_db().await;
+    setup_product_table(&db).await;
+
+    let t1_id: i64;
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let m = new_product("T1 Restore", None).insert(&db).await.unwrap();
+        t1_id = m.id;
+        Product::delete_many_soft(vec![m.into()], &db).await.unwrap();
+        assert_eq!(find_active_products(&db).await.len(), 0);
+    }
+
+    // 租户 2 尝试恢复租户 1 的记录 → 租户 WHERE 拦截，0 行
+    {
+        let _guard = TenantGuard::set(Value::String(Some("2".to_string())));
+        let result = Product::restore_by_ids(vec![t1_id], &db).await.unwrap();
+        assert_eq!(result.rows_affected, 0, "tenant 2 must not restore tenant 1 records");
+    }
+
+    // 租户 1 恢复自己的记录 → 成功
+    {
+        let _guard = TenantGuard::set(Value::String(Some("1".to_string())));
+        let result = Product::restore_by_ids(vec![t1_id], &db).await.unwrap();
+        assert_eq!(result.rows_affected, 1);
+        assert_eq!(find_active_products(&db).await.len(), 1);
+    }
+}
+
+// ===========================================================================
+// 乐观锁（#[sea_orm_ext(VERSION)]）测试
+// ===========================================================================
+
+/// INSERT 未设置时初始化为 0；普通 update 时自增
+#[tokio::test]
+#[serial]
+async fn test_version_initialized_and_incremented() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("lock_user")));
+
+    let db = create_sqlite_db().await;
+    setup_lock_record_table(&db).await;
+
+    // INSERT：version 未设置 → 初始化为 0
+    let created = new_lock_record("L1").insert(&db).await.unwrap();
+    assert_eq!(created.version, 0);
+
+    // UPDATE：before_save 自增 → version = 1
+    let mut am: LockRecordActiveModel = created.into();
+    am.name = Set("L1-updated".to_string());
+    let updated = am.update(&db).await.unwrap();
+    assert_eq!(updated.version, 1);
+    assert_eq!(updated.updated_by, Some("lock_user".to_string()));
+
+    // 再更新 → version = 2
+    let mut am: LockRecordActiveModel = updated.into();
+    am.name = Set("L1-updated-2".to_string());
+    let updated = am.update(&db).await.unwrap();
+    assert_eq!(updated.version, 2);
+}
+
+/// update_with_version：成功时版本自增；基于旧版本更新冲突返回 RecordNotUpdated 且不覆盖
+#[tokio::test]
+#[serial]
+async fn test_update_with_version_success_and_conflict() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+    set_field_fill_handler(Box::new(TestFillHandler::new("lock_v")));
+
+    let db = create_sqlite_db().await;
+    setup_lock_record_table(&db).await;
+
+    let created = new_lock_record("V1").insert(&db).await.unwrap();
+    assert_eq!(created.version, 0);
+
+    // 两次"并发读取"：都拿到 version = 0
+    let read_a = created.clone();
+    let read_b = created.clone();
+
+    // A 成功：version 0 → 1
+    let mut am_a: LockRecordActiveModel = read_a.into();
+    am_a.name = Set("V1-from-A".to_string());
+    let updated = LockRecord::update_with_version(am_a, &db).await.unwrap();
+    assert_eq!(updated.version, 1);
+    assert_eq!(updated.name, "V1-from-A");
+    assert_eq!(updated.updated_by, Some("lock_v".to_string()));
+
+    // B 基于旧版本 0 更新 → 冲突
+    let mut am_b: LockRecordActiveModel = read_b.into();
+    am_b.name = Set("V1-from-B".to_string());
+    let err = LockRecord::update_with_version(am_b, &db)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, sea_orm::DbErr::RecordNotUpdated),
+        "expected RecordNotUpdated, got: {err}"
+    );
+
+    // 数据保持 A 的写入（未被 B 覆盖）
+    let current = LockRecord::find_by_id(created.id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.name, "V1-from-A");
+    assert_eq!(current.version, 1);
+}
+
+/// update_with_version：ActiveModel 缺少版本字段时报 AttrNotSet
+#[tokio::test]
+#[serial]
+async fn test_update_with_version_requires_version() {
+    init_logging();
+    reset_global_state();
+    set_id_generator(Box::new(TestIdGenerator::new()));
+
+    let db = create_sqlite_db().await;
+    setup_lock_record_table(&db).await;
+
+    let created = new_lock_record("V2").insert(&db).await.unwrap();
+
+    // 手动构造 version 为 NotSet 的 ActiveModel
+    let am = LockRecordActiveModel {
+        id: Set(created.id),
+        name: Set("V2-x".to_string()),
+        ..Default::default()
+    };
+    let err = LockRecord::update_with_version(am, &db).await.unwrap_err();
+    assert!(
+        matches!(err, sea_orm::DbErr::AttrNotSet(_)),
+        "expected AttrNotSet, got: {err}"
+    );
+}

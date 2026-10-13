@@ -31,7 +31,14 @@ acquire_timeout = 30000 # 获取连接超时，毫秒（默认无）
 # 默认填充用户名（当未注册 FieldFillHandler 时使用，默认 "system"）
 default_user = "system"
 
-# 静态填充规则（可选）。由 SeaOrmExtPlugin 解析后注册为默认 FieldFillHandler。
+# 慢 SQL 告警阈值（毫秒，0/不设置 = 关闭；独立于 enable_sql_log）
+slow_sql_threshold_ms = 500
+
+# 主库熔断（可选）：连续连接类失败达到阈值后快速失败，超时后半开探针恢复
+circuit_breaker_failure_threshold = 5
+circuit_breaker_reset_secs = 30
+
+# 静态填充规则（可选）。由 SeaOrmPlugin 解析后注册为默认 FieldFillHandler。
 # 优先级低于用户通过 set_field_fill_handler 注册的处理器。
 # operation 取值："insert" / "update" / "insert_update"
 [[sea-orm-ext.fill_rules]]
@@ -66,6 +73,10 @@ enabled = true
 mode = "database"
 database_source = "config"
 default_tenant_id = "1876543210000000001"
+
+# 每个租户连接独立熔断（可选）
+circuit_breaker_failure_threshold = 5
+circuit_breaker_reset_secs = 30
 
 # -----------------------------------------------------------------------------
 # 各租户的独立数据库配置（database_source = "config" 时使用）

@@ -43,9 +43,12 @@
 //! // 输出: [sea-orm-ext SQL] SELECT "user"."id", "user"."name" FROM "user" WHERE "user"."is_deleted" = 0
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static SQL_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// 慢 SQL 阈值（毫秒，0 = 关闭）
+static SLOW_SQL_THRESHOLD_MS: AtomicU64 = AtomicU64::new(0);
 
 /// 启用 SQL 日志
 pub fn enable_sql_log() {
@@ -65,4 +68,34 @@ pub fn set_sql_log_enabled(enabled: bool) {
 /// 检查 SQL 日志是否启用
 pub fn is_sql_log_enabled() -> bool {
     SQL_LOG_ENABLED.load(Ordering::SeqCst)
+}
+
+/// 设置慢 SQL 日志阈值（毫秒，0 = 关闭，默认关闭）
+pub fn set_slow_sql_threshold_ms(ms: u64) {
+    SLOW_SQL_THRESHOLD_MS.store(ms, Ordering::SeqCst);
+}
+
+/// 获取慢 SQL 日志阈值（毫秒）
+pub fn get_slow_sql_threshold_ms() -> u64 {
+    SLOW_SQL_THRESHOLD_MS.load(Ordering::SeqCst)
+}
+
+/// 记录慢 SQL：执行耗时达到阈值时打印 warn 日志。
+///
+/// 独立于 [`is_sql_log_enabled`] 开关：即使未开启完整 SQL 日志，
+/// 只要配置了阈值，慢 SQL 仍会告警。
+pub fn log_slow_sql(sql: &str, elapsed: std::time::Duration) {
+    let threshold = get_slow_sql_threshold_ms();
+    if threshold == 0 {
+        return;
+    }
+    let elapsed_ms = elapsed.as_millis() as u64;
+    if elapsed_ms >= threshold {
+        tracing::warn!(
+            "[sea-orm-ext Slow SQL] {}ms (threshold {}ms): {}",
+            elapsed_ms,
+            threshold,
+            sql
+        );
+    }
 }

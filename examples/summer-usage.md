@@ -12,7 +12,7 @@ summer-web = "0.6.0"
 ```
 
 Feature 说明：
-- `summer` — 启用 Summer Plugin 集成（TenantPlugin, SeaOrmExtPlugin）
+- `summer` — 启用 Summer Plugin 集成（TenantPlugin, SeaOrmPlugin）
 - `summer-web` — 启用 axum 自动租户切换（TenantLayer + TenantDb extractor）
 - `runtime-tokio` — 启用 tokio 异步运行时支持
 - `full` — 启用所有功能
@@ -83,7 +83,7 @@ impl FieldFillHandler for MyFieldFillHandler {
 ### 3. 在 Summer 应用中使用
 
 ```rust
-use sea_orm_ext::plugin::sea_orm_ext::{FieldFillHandlerComponent, SeaOrmExtPlugin, SnowflakeIdGenerator};
+use sea_orm_ext::plugin::sea_orm_ext::{FieldFillHandlerComponent, SeaOrmPlugin, SnowflakeIdGenerator};
 use sea_orm_ext::plugin::tenant::{TenantDatabaseProviderComponent, TenantIdProviderComponent, TenantPlugin};
 use sea_orm_ext::{FieldFillHandler, FieldFillOperation, TenantDatabaseProvider, TenantIdProvider};
 use sea_orm_ext::set_id_generator;
@@ -100,7 +100,7 @@ async fn main() {
 
     let mut app = App::new();
     app.add_plugin(TenantPlugin::new())
-        .add_plugin(SeaOrmExtPlugin::new())
+        .add_plugin(SeaOrmPlugin::new())
         .add_component(TenantIdProviderComponent::new(Arc::new(MyTenantIdProvider)))
         .add_component(TenantDatabaseProviderComponent::new(Arc::new(MyTenantDatabaseProvider)))
         .add_component(FieldFillHandlerComponent::new(Arc::new(MyFieldFillHandler)));
@@ -197,5 +197,5 @@ database_source = "custom"
 | 插件 | 配置前缀 | 功能 |
 |---|---|---|
 | `TenantPlugin` | `sea-orm-ext-tenant` | 多租户配置 + 租户 ID/数据库提供器注册 + 自动 axum layer |
-| `SeaOrmExtPlugin` | `sea-orm-ext` | 字段自动填充 + ID 生成 + SQL 日志 |
+| `SeaOrmPlugin` | `sea-orm-ext` | 字段自动填充 + ID 生成 + SQL 日志 |
 | `SoftDeletePlugin` | — | 不需要，使用宏即自动开启 |

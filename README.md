@@ -6,9 +6,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.81+-blue.svg?style=for-the-badge)](https://www.rust-lang.org)
-[![crates.io](https://img.shields.io/badge/crates.io-v0.0.3-orange.svg?style=for-the-badge)](https://crates.io/crates/sea-orm-ext)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.0.7-orange.svg?style=for-the-badge)](https://crates.io/crates/sea-orm-ext)
 [![docs.rs](https://img.shields.io/badge/docs.rs-latest-blue.svg?style=for-the-badge)](https://docs.rs/sea-orm-ext)
-[![Test Status](https://img.shields.io/badge/tests-162%20passed-green?style=for-the-badge)](#测试覆盖)
+[![Test Status](https://img.shields.io/badge/tests-175%20passed-green?style=for-the-badge)](#测试覆盖)
 
 > ⚡ SeaORM 非侵入式企业级扩展 — 一行注解开启自动填充、软删除、多租户隔离，业务层零样板代码，深度集成 Summer 框架
 
@@ -21,7 +21,8 @@
 | 特性 | 说明 | 对比 MyBatis-Plus |
 |------|------|-------------------|
 | **🔄 自动填充** | INSERT/UPDATE 时自动填充 `created_by`、`updated_by` 等审计字段 | 对应 `MetaObjectHandler` |
-| **🛡️ 软删除** | DELETE 自动转为逻辑删除，自动过滤已删除记录 | 对应 `@TableLogic` |
+| **🛡️ 软删除** | DELETE 自动转为逻辑删除，自动过滤已删除记录；支持 `restore_many()` / `restore_by_ids()` 恢复 | 对应 `@TableLogic` |
+| **🔒 乐观锁** | `#[sea_orm_ext(VERSION)]` 版本自增 + `update_with_version()` 冲突检测 | 对应 `@Version` |
 | **🏢 多租户** | Table/Database 两种隔离模式，SELECT/UPDATE/DELETE 全自动租户过滤 | 对应 `@MultiTenant` |
 | **🔌 自动路由** | `SeaOrmExtConnection` 在 SQL 执行时自动路由到租户库，业务层零样板代码 | 无直接对应 |
 | **🌐 动态租户** | 主库查询租户配置 → 自动建立连接 → 缓存 + 健康检查 + 动态增删 | 无直接对应 |
@@ -29,6 +30,9 @@
 | **🚫 忽略租户** | `#[ignore_tenant]` 宏一行跳过租户过滤，跨租户聚合查询 | 对应 `@InterceptorIgnore` |
 | **⚡ Summer 集成** | 声明式配置 + 自动数据库切换，开箱即用 | 无直接对应 |
 | **📝 SQL 日志** | 打印完整 SQL（参数值注入）+ 独立参数列表，调试无忧 | 对应 `log-impl:2.x` |
+| **🚦 连接熔断** | 每连接独立熔断器，连续连接类失败后快速失败，半开探针自动恢复 | 对应 Sentinel/Hystrix |
+| **🐢 慢 SQL 告警** | 独立阈值，超时打印 `[sea-orm-ext Slow SQL]`，无需开启全量 SQL 日志 | 对应慢查询日志 |
+| **🩺 租户运维 API** | `TenantManager` 提供租户列表 / 计数 / 单租户与全量健康检查 | 无直接对应 |
 | **📄 分页查询** | Web 友好的分页扩展，自动从请求参数解析分页信息 | 对应 `PageHelper` |
 | **🔗 单依赖引入** | Re-export sea-orm/sea-query/summer/summer-web，一个依赖全搞定 | 无直接对应 |
 
@@ -41,21 +45,21 @@
 ```toml
 [dependencies]
 # 默认：启用 runtime-tokio-native-tls
-sea-orm-ext = "0.0.3"
+sea-orm-ext = "0.0.7"
 
 # 指定数据库驱动
-sea-orm-ext = { version = "0.0.3", features = ["postgres"] }
-sea-orm-ext = { version = "0.0.3", features = ["mysql"] }
-sea-orm-ext = { version = "0.0.3", features = ["sqlite"] }
+sea-orm-ext = { version = "0.0.7", features = ["postgres"] }
+sea-orm-ext = { version = "0.0.7", features = ["mysql"] }
+sea-orm-ext = { version = "0.0.7", features = ["sqlite"] }
 
 # Summer + Web + PostgreSQL + Rustls + Chrono + OpenAPI
-sea-orm-ext = { version = "0.0.3", features = [
+sea-orm-ext = { version = "0.0.7", features = [
     "summer", "summer-web", "postgres", "rustls",
     "with-chrono", "with-uuid", "openapi"
 ] }
 
 # 启用全部功能
-sea-orm-ext = { version = "0.0.3", features = ["full"] }
+sea-orm-ext = { version = "0.0.7", features = ["full"] }
 ```
 
 > 💡 **无需单独引入** `sea-orm`、`sea-query`、`summer`、`summer-web`，`sea-orm-ext` 已 re-export 所有依赖。
@@ -233,9 +237,16 @@ let my_orders = orders::Entity::find().all(&db).await?;
 let mut am: orders::ActiveModel = inserted.into();
 am.quantity = Set(5);
 let updated = am.update(&db).await?;
+let order_id = updated.id;
 
 // ✅ DELETE：自动转为 UPDATE SET is_deleted=1
-let result = am.delete(&db).await?; // ✅ 软删除成功
+// 软删除已通过 before_delete 钩子执行，`delete()` 返回
+// Err(DbErr::Custom("Record was soft-deleted")) 作为"已软删除"信号
+let am: orders::ActiveModel = updated.into();
+let result = am.delete(&db).await;
+
+// ✅ RESTORE：按 ID 撤销软删除（仅影响已删除的行，重复调用幂等）
+let result = orders::Entity::restore_by_ids(vec![order_id], &db).await?;
 ```
 
 ### 4. 多租户场景示例
@@ -386,6 +397,12 @@ manager.remove_tenant("tenant-a").await?;
 
 // 刷新所有缓存
 manager.refresh_cache().await?;
+
+// 运维 API：租户列表 / 计数 / 健康检查
+let tenants: Vec<String> = manager.list_tenants();
+let count: usize = manager.tenant_count();
+let entry = manager.health_check_tenant("tenant-a").await; // Option<HealthEntry>
+let report = manager.health_check_all().await;             // HealthReport
 ```
 
 ### 6. 租户 ID 加解密
@@ -539,6 +556,9 @@ connect_timeout = 30000
 idle_timeout = 600000
 acquire_timeout = 30000
 default_user = "system"
+slow_sql_threshold_ms = 500              # 慢 SQL 告警阈值（毫秒，0/不设置 = 关闭）
+circuit_breaker_failure_threshold = 5    # 主库熔断：连续连接类失败阈值（0 = 关闭）
+circuit_breaker_reset_secs = 30          # 主库熔断持续时间（秒，默认 30）
 
 # 多租户配置
 [sea-orm-ext-tenant]
@@ -549,6 +569,8 @@ default_tenant_id = "1"
 tenant_id_header = "X-Tenant-Id"  # 从 HTTP Header 提取 tenant_id（可选）
 enable_sql_log = true         # 开启 SQL 日志（完整 SQL + 参数值注入）
 max_retries = 3               # 连接失败重试次数（指数退避）
+circuit_breaker_failure_threshold = 5  # 每个租户连接独立熔断（0 = 关闭）
+circuit_breaker_reset_secs = 30        # 租户连接熔断持续时间（秒）
 ignored_tables = ["sys_dict", "sys_config"]  # 忽略租户过滤的表
 
 # 默认数据库 fallback 链（主库故障时按顺序尝试）
@@ -675,6 +697,46 @@ let conn: DatabaseConnection = store.get(&tenant_id).unwrap();
 let ext_conn: SeaOrmExtConnection = store.get_ext(&tenant_id).unwrap();
 ```
 
+### 慢 SQL 告警
+
+```rust
+use sea_orm_ext::set_slow_sql_threshold_ms;
+
+// 执行耗时超过 500ms 的 SQL 打印 [sea-orm-ext Slow SQL] warn 日志；
+// 独立于 enable_sql_log 开关，未开启完整 SQL 日志时同样生效。
+set_slow_sql_threshold_ms(500);
+```
+
+### 连接熔断
+
+每个 `SeaOrmExtConnection` 可配置独立熔断器：连续**连接类错误**（连接失败/超时/连接池耗尽等）达到阈值后
+快速失败，`reset_timeout` 后进入 HalfOpen 放行探针请求，成功则恢复。业务错误（如唯一键冲突）不计入熔断。
+
+```rust
+use sea_orm_ext::CircuitBreaker;
+use std::sync::Arc;
+use std::time::Duration;
+
+// 方式一：TOML 配置（推荐）
+// [sea-orm-ext] circuit_breaker_failure_threshold = 5 / circuit_breaker_reset_secs = 30
+
+// 方式二：代码手动设置（阈值 5，熔断 30 秒）
+let mut conn = SeaOrmExtConnection::new(db);
+conn.set_circuit_breaker(Some(Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)))));
+```
+
+> 主库、每个静态租户连接、每个动态租户连接各自持有独立熔断器实例，单个租户故障不会影响其他租户。
+
+### 流式查询与自动路由
+
+`StreamTrait` 的流式查询受生命周期约束**无法自动路由**：database 模式下若当前请求需要路由到租户库，
+`stream_raw` 会返回 `STREAM-ROUTING` 错误（而非静默查询主库）。请显式获取租户连接后执行：
+
+```rust
+let tenant_db = tenant_db(&db)?;                       // 或 tenant_db_async(&db).await?
+let stream = OrderEntity::find().stream(&tenant_db).await?;
+```
+
 ---
 
 ## 📄 分页查询
@@ -712,7 +774,7 @@ max_page_size = 2000
 | 宏 | 功能 | 生成的字段 |
 |----|------|-----------|
 | `DeriveAutoFill` | 自动填充 | `created_by`, `updated_by` 等 |
-| `DeriveSoftDelete` | 软删除 | `delete_many_soft()`, `find_with_deleted()` 等 |
+| `DeriveSoftDelete` | 软删除 | `delete_many_soft()`, `restore_many()`, `find_with_deleted()` 等 |
 | `DeriveTenant` | 多租户 | `find_without_tenant()`, 自动 `WHERE tenant_id=?` |
 | `DeriveAutoFillSoftDeleteTenant` | 全功能 | 以上全部 |
 
@@ -725,6 +787,7 @@ max_page_size = 2000
 | `#[sea_orm_ext(update)]` | 字段 | UPDATE 时自动填充 |
 | `#[sea_orm_ext(insert_update)]` | 字段 | INSERT 和 UPDATE 时都填充 |
 | `#[sea_orm_ext(TENANT)]` | 字段 | 标记为租户隔离字段 |
+| `#[sea_orm_ext(VERSION)]` | 字段 | 标记为乐观锁版本字段（非 Option 整数类型，自增 + `update_with_version()` 冲突检测） |
 | `#[soft_delete(default = 0, del = 1)]` | 字段 | 标记为软删除字段 |
 
 ### 生成的 CRUD 方法
@@ -745,6 +808,32 @@ max_page_size = 2000
 | `insert_many_with_fill()` | 批量插入（单条 SQL） |
 | `update_many_with_fill()` | 批量更新（自动带租户 WHERE） |
 | `delete_many_soft()` | 批量软删除（单条 SQL，自动带租户 WHERE） |
+| `restore_many()` | 批量恢复（撤销软删除，仅影响已删除行，自动带租户 WHERE） |
+| `restore_by_ids()` | 按主键 ID 列表批量恢复（撤销软删除） |
+| `update_with_version()` | 乐观锁更新（版本自增 + 冲突检测，冲突返回 `DbErr::RecordNotUpdated`） |
+
+### 乐观锁用法（`#[sea_orm_ext(VERSION)]`）
+
+```rust
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, DeriveAutoFillSoftDeleteTenant)]
+#[sea_orm(table_name = "orders")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_generate)]
+    pub id: i64,
+    pub quantity: i32,
+    #[sea_orm_ext(VERSION)]              // 乐观锁版本字段（非 Option 整数类型）
+    pub version: i32,
+    #[soft_delete(default = 0, del = 1)]
+    pub is_deleted: i32,
+}
+
+// INSERT 未设置时初始化为 0；普通 update 自动自增 1
+// 带冲突检测的更新：version 未变才更新，0 行命中返回 Err(DbErr::RecordNotUpdated)
+let am: orders::ActiveModel = loaded.into();   // loaded: 查询得到的 Model（含版本旧值）
+let updated = orders::Entity::update_with_version(am, &db).await?;
+```
+
+> ⚠️ 批量更新（`update_many*`）不参与乐观锁；`#[sea_orm_ext(VERSION)]` 字段请勿同时标注为填充字段（`insert` / `update` / `insert_update`）。
 
 ---
 
@@ -778,12 +867,12 @@ sea_orm_ext::set_id_generator(Box::new(MyGenerator));
 | 测试套件 | 测试数 | 覆盖范围 |
 |---------|--------|----------|
 | `crud_tests.rs` | 13 | 单条 CRUD、自动填充、字符串主键、UUID/Snowflake ID |
-| `macro_tests.rs` | 17 | 批量插入/更新/软删除、`#[ignore_tenant]` 宏功能测试 |
+| `macro_tests.rs` | 23 | 批量插入/更新/软删除/恢复、乐观锁、`#[ignore_tenant]` 宏功能测试 |
 | `integration_tests.rs` | 34 | 多租户隔离（Table/Database 双模式）、TenantIdProvider、SQL 日志、SeaOrmExtConnection、update_many/delete_many 租户过滤 |
-| `unit_tests.rs` | 87 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试、**自动路由（v0.0.3+）**、**混合模式 fallback** |
+| `unit_tests.rs` | 94 | 配置解析、错误类型、ID 生成器、字段填充、软删除、SQL 日志、租户过滤、守卫模式、ConnectionStore、动态租户管理、TenantIdCodec 加解密、组合场景测试、**自动路由（v0.0.3+）**、**混合模式 fallback**、**熔断/流式 fail-fast/运维 API（v0.0.5+）** |
 | `lib.rs` (内嵌) | 11 | 分页逻辑、TOML 配置加载、基础工具函数 |
 
-**总计：162 个测试，100% 通过**
+**总计：175 个测试，100% 通过**（`--features full`；`--features runtime-tokio` 下为 172 个）
 
 ```bash
 cargo test --workspace --features full

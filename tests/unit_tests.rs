@@ -1484,6 +1484,7 @@ impl TestDynamicConfigProvider {
                     acquire_timeout_secs: Some(10),
                     idle_timeout_secs: Some(60),
                     enable_logging: Some(false),
+                    ..Default::default()
                 },
                 TenantConnectionConfig {
                     tenant_id: "tenant-b".to_string(),
@@ -1495,6 +1496,7 @@ impl TestDynamicConfigProvider {
                     acquire_timeout_secs: Some(10),
                     idle_timeout_secs: Some(60),
                     enable_logging: Some(false),
+                    ..Default::default()
                 },
             ],
         }
@@ -2297,4 +2299,131 @@ fn test_get_database_for_tenant_unchecked_skips_mode_check() {
     let result = get_database_for_tenant_unchecked(&Value::String(Some("non-existent".to_string())));
     assert!(result.is_ok(), "should not error for unknown tenant");
     assert!(result.unwrap().is_none(), "should return None for unknown tenant (fallback)");
+}
+
+// ===========================================================================
+// v0.0.5 新增能力测试：熔断接入 / 流式路由 fail-fast / 运维 API / 慢 SQL
+// ===========================================================================
+
+use sea_orm::ConnectionTrait;
+use sea_orm_ext::{get_slow_sql_threshold_ms, set_slow_sql_threshold_ms, CircuitBreaker};
+use std::time::Duration;
+
+/// 熔断器：健康请求保持 Closed；触发熔断后 SQL 快速失败（不再执行）
+#[tokio::test]
+#[serial]
+async fn test_circuit_breaker_fast_fail() {
+    reset_global_state();
+
+    let db = create_sqlite_db().await;
+    let mut ext = SeaOrmExtConnection::new(db);
+
+    let breaker = Arc::new(CircuitBreaker::new(1, Duration::from_secs(60)));
+    ext.set_circuit_breaker(Some(breaker.clone()));
+
+    // 健康请求成功 → 熔断器保持 Closed
+    ext.execute_unprepared("SELECT 1").await.unwrap();
+    assert_eq!(breaker.consecutive_failures(), 0);
+    assert!(breaker.allow());
+
+    // 手动触发熔断（阈值 1）→ 后续 SQL 快速失败
+    breaker.record_failure();
+    let err = ext
+        .execute_unprepared("SELECT 1")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("CIRCUIT-BREAKER"), "expected fast-fail, got: {err}");
+}
+
+/// 流式查询：需要路由到租户库时快速失败，避免静默查询主库返回错误数据
+#[tokio::test]
+#[serial]
+async fn test_stream_query_fails_fast_when_tenant_routing_active() {
+    init_logging();
+    reset_global_state();
+
+    // 主库（流式查询的承载连接）
+    let main_db = create_sqlite_db().await;
+    let ext_conn = SeaOrmExtConnection::new(main_db);
+    setup_product_table(&ext_conn).await;
+
+    // 租户连接
+    let tenant_conn = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    store
+        .insert_ext(
+            Value::String(Some("tenant-1".to_string())),
+            SeaOrmExtConnection::new(tenant_conn),
+        )
+        .unwrap();
+
+    // 全局 table + 运行时 provider 指定 database（混合模式）
+    let provider = reset_global_state_with_provider();
+    set_tenant_config(TenantConfig {
+        enabled: true,
+        mode: TenantMode::Table,
+        default_tenant_id: None,
+        ignored_tables: HashSet::new(),
+    });
+    set_tenant_store(store);
+    provider.set(Value::String(Some("tenant-1".to_string())));
+    provider.set_mode(Some("database"));
+
+    // 需要路由 → 流式查询快速失败
+    let result = Product::find().stream(&ext_conn).await;
+    match result {
+        Ok(_) => panic!("stream should fail fast when routing is required"),
+        Err(e) => {
+            assert!(
+                e.to_string().contains("STREAM-ROUTING"),
+                "unexpected error: {e}"
+            );
+        }
+    }
+
+    // TenantIgnoreGuard 生效 → 无需路由，流式查询正常走主库
+    {
+        let _guard = TenantIgnoreGuard::new();
+        let stream = Product::find().stream(&ext_conn).await;
+        assert!(stream.is_ok(), "stream should work when routing is not required");
+    }
+}
+
+/// TenantManager 运维 API：列表 / 计数 / 单租户与全量健康检查
+#[tokio::test]
+#[serial]
+async fn test_dynamic_tenant_manager_ops_api() {
+    reset_global_state();
+
+    let main_db = create_sqlite_db().await;
+    let store: Arc<dyn ConnectionStore> = Arc::new(HashMapConnectionStore::new());
+    let provider = Arc::new(TestDynamicConfigProvider::new());
+    let manager = TenantManager::new(main_db, store, provider, DynamicTenantConfig::default());
+
+    manager.add_tenant("tenant-a").await.unwrap();
+    assert_eq!(manager.tenant_count(), 1);
+    assert!(manager.list_tenants().contains(&"tenant-a".to_string()));
+
+    let entry = manager
+        .health_check_tenant("tenant-a")
+        .await
+        .expect("tenant-a should be cached");
+    assert!(entry.healthy, "fresh sqlite connection should be healthy: {:?}", entry.error);
+
+    let report = manager.health_check_all().await;
+    assert_eq!(report.total_count(), 1);
+    assert!(report.any_healthy());
+
+    assert!(manager.health_check_tenant("missing").await.is_none());
+}
+
+/// 慢 SQL 阈值设置/读取
+#[test]
+#[serial]
+fn test_slow_sql_threshold_setting() {
+    set_slow_sql_threshold_ms(123);
+    assert_eq!(get_slow_sql_threshold_ms(), 123);
+    set_slow_sql_threshold_ms(0);
+    assert_eq!(get_slow_sql_threshold_ms(), 0);
 }

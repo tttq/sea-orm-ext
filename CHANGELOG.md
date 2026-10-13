@@ -4,6 +4,90 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.7] - 2026-10-04
+
+### Added
+
+- **乐观锁 `#[sea_orm_ext(VERSION)]`**（派生宏生成，支持非 Option 整数类型 i8/i16/i32/i64/u8/u16/u32/u64）：
+  - INSERT（含 `insert_many_with_fill*` 批量插入）未设置时版本初始化为 0；UPDATE 时 `before_save` 自动自增 1
+  - 新增 `Entity::update_with_version(model, db)`：`UPDATE ... SET version = version + 1 WHERE pk = ? AND version = <旧值>`，
+    版本冲突（0 行命中）时返回 `sea_orm::DbErr::RecordNotUpdated`，成功时返回更新后的 `Model`
+  - `ActiveModel` 缺少版本旧值时返回 `DbErr::AttrNotSet`；批量更新（`update_many*`）不参与乐观锁
+- 新增 3 个回归测试：版本初始化与自增、`update_with_version` 成功与冲突不覆盖、缺少版本字段报错
+
+### Changed
+
+- 版本号从 `0.0.6` 升级到 `0.0.7`（主 crate 与宏 crate 同步）
+
+---
+
+## [0.0.6] - 2026-10-04
+
+### Added
+
+- **软删除恢复 API**（派生宏生成，适用于 `DeriveSoftDelete` / `DeriveAutoFillSoftDelete` / `DeriveAutoFillSoftDeleteTenant`）：
+  - `Entity::restore_many(models, db)`：从输入模型提取主键，单条 SQL 将软删除标记恢复为默认值
+  - `Entity::restore_by_ids(ids, db)`：按主键 ID 列表批量恢复（无 auto_generate 主键时不生成）
+  - 两者均附加 `WHERE 软删除字段 = 删除标记`，只恢复当前处于"已删除"状态的行（重复调用幂等）；
+    租户 WHERE 条件由覆盖后的 `Entity::update_many()` 自动注入，跨租户恢复被拦截
+- 新增 3 个回归测试：`restore_many` 批量恢复、`restore_by_ids` 状态守卫与幂等、恢复的租户隔离
+
+### Changed
+
+- 版本号从 `0.0.5` 升级到 `0.0.6`（主 crate 与宏 crate 同步）
+
+---
+
+## [0.0.5] - 2026-10-04
+
+### Added
+
+- **熔断器接入 `SeaOrmExtConnection`**：新增 `set_circuit_breaker()` / `circuit_breaker()`，SQL 执行前检查熔断状态（Open 快速失败）、成功后 `record_success()`、仅连接类错误计入 `record_failure()`，避免业务错误误触发
+  - 主库熔断：`[sea-orm-ext] circuit_breaker_failure_threshold` / `circuit_breaker_reset_secs`
+  - 静态租户连接熔断：`[sea-orm-ext-tenant]` 同名配置，每个租户连接使用独立熔断器实例
+  - 动态租户连接熔断：`TenantConnectionConfig::circuit_breaker_failure_threshold` / `circuit_breaker_reset_secs`
+- **慢 SQL 告警**：新增 `set_slow_sql_threshold_ms()` / `get_slow_sql_threshold_ms()` 与 `[sea-orm-ext] slow_sql_threshold_ms` 配置；超过阈值的 SQL 打印 `[sea-orm-ext Slow SQL]` warn 日志，独立于完整 SQL 日志开关
+- **TenantManager 运维 API**：`list_tenants()` / `tenant_count()` / `health_check_tenant()` / `health_check_all()`，与 `health` 模块打通
+- **新增 4 个回归测试**：熔断快速失败、流式路由 fail-fast、运维 API、慢 SQL 阈值
+
+### Changed
+
+- **流式查询快速失败**：database 模式下需要路由到租户库时，`stream_raw` 返回 `STREAM-ROUTING` 错误（原先静默查询主库可能返回错误数据）；业务层可用 `tenant_db()` / `tenant_db_async()` 显式获取租户连接后执行流式查询
+- 版本号从 `0.0.4` 升级到 `0.0.5`（主 crate 与宏 crate 同步）
+
+---
+
+## [0.0.4] - 2026-10-04
+
+### Fixed
+
+- **ID 生成器并发修复**：修复并发场景可能生成重复 ID 的问题——Snowflake 生成器改为单原子状态（时间戳 + 序列号）CAS 推进，并补全类型感知生成（`i32` / `String` 等主键类型适配）
+- **示例 target 断链修复**：`Cargo.toml` 声明的 `examples/sea-orm-tenant-example.rs` 不存在，导致 `cargo test --workspace --features full` 无法编译；示例文件已按 target 名称重命名补齐，并更新已移除的 `SeaOrmExtPlugin` 引用为 `SeaOrmPlugin`
+- **租户上下文线程安全修复**（安全风险）：
+  - `TenantLayer` 中间件改为在 `tenant_request_scope`（task-local）内执行请求，租户上下文与过滤开关跨线程跟随请求任务，请求结束自动失效，杜绝 thread-local 残留导致的跨请求租户串用
+  - `TenantIgnoreGuard` 过滤禁用计数升级为 task-local 优先 + thread-local 回退，避免 `#[ignore_tenant]` 在多线程运行时泄漏禁用状态
+- **`TenantGuard` 支持嵌套与上下文恢复**：drop 时恢复设置前的上下文（原先无条件清除，嵌套场景会丢失外层上下文）
+- **`TenantManager::refresh_cache()` 真正全量重载**：先清空连接缓存再重载，主库中已删除/禁用的租户不再残留在缓存；`update_tenant()` 先查新配置再移除旧连接，避免半程清空
+- **混合模式下手动选库 API 与自动路由行为统一**：`get_tenant_database` / `get_database_for_tenant` / `tenant_db*` 及 `TenantDb` extractor 改用 `get_effective_tenant_mode()`（运行时 provider 优先），与 `SeaOrmExtConnection` 自动路由保持一致
+- **重试退避序列修正**：首次退避从实际 200ms 修正为注释声明的 100ms 起始指数退避；补充写操作重试的幂等性警示文档
+- **批量插入宏清理**：移除 3 处未使用的 `_fill_handler` / `_id_generator` 死变量及误导性注释
+- **分页 offset 溢出防护**：`page` 进入 sea-orm 分页器前收敛上限，避免 `size * page` u64 溢出
+- **fallback 链探活语义修正**：链中所有数据库探活失败时返回 `None`，不再把已知不可用的连接交给调用方
+- **派生宏属性注册去重**：移除重复的 `sea_orm_ext` 属性声明与失效的旧属性名兼容注释
+
+### Changed
+
+- **项目重命名**：包名从 `summer-sea-orm-ext` 重命名为 `sea-orm-ext`（模块 `sea_orm_ext`、宏 crate `sea-orm-ext-macros`、配置前缀 `[sea-orm-ext*]` 同步调整）
+- **示例重命名**：`examples/summer-tenant-example.rs` → `examples/sea-orm-tenant-example.rs`，与 `Cargo.toml` target 名称一致
+
+### Documentation
+
+- README 版本号对齐 0.0.4；修正软删除示例（`delete()` 返回 `Err("Record was soft-deleted")` 表示软删除已执行）
+- 新增 `LICENSE`（MIT）与 GitHub Actions CI（fmt / clippy / test / MSRV 1.81）
+- 清理误提交的 `.build.log`
+
+---
+
 ## [0.0.3] - 2026-07-26
 
 ### Added
